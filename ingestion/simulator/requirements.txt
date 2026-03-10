@@ -1,0 +1,16 @@
+# =============================================================================
+# MARINEFLOW — AIS Simulator Dependencies
+# ingestion/simulator/requirements.txt
+# =============================================================================
+
+# Google Cloud Pub/Sub client
+google-cloud-pubsub==2.21.1
+
+# Environment variable management
+python-dotenv==1.0.1
+
+# Structured logging
+structlog==24.1.0
+
+# Faker for realistic vessel name generation
+Faker==24.3.0
