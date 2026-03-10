@@ -1,0 +1,25 @@
+# =============================================================================
+# MARINEFLOW — AIS Producer Dependencies
+# ingestion/ais_producer/requirements.txt
+# =============================================================================
+
+# WebSocket client for AIS stream connection
+websockets==12.0
+
+# Google Cloud Pub/Sub client
+google-cloud-pubsub==2.21.1
+
+# Data validation and serialization
+pydantic==2.6.4
+
+# Environment variable management
+python-dotenv==1.0.1
+
+# Structured logging
+structlog==24.1.0
+
+# Async HTTP (used for health checks)
+aiohttp==3.9.3
+
+# Retry logic
+tenacity==8.2.3
