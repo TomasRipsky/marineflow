@@ -474,9 +474,12 @@ Org policy lo impide, pero además ADC es la práctica recomendada por Google pa
 
 ### aisstream.io BETA
 
-El servicio de streaming AIS en tiempo real (`aisstream.io`) está en BETA sin SLA garantizado. Durante el desarrollo se encontraron problemas de conectividad WebSocket relacionados con renegociación TLS en el servidor. El simulador cubre esta limitación completamente para desarrollo y testing.
+El servicio de streaming AIS en tiempo real (`aisstream.io`) está en BETA sin SLA garantizado. Durante el desarrollo se encontraron problemas intermitentes de conectividad WebSocket relacionados con renegociación TLS en el servidor — el servicio estuvo caído temporalmente y se recuperó solo.
 
-**Para intentar conexión real**: `python ingestion/ais_producer/main.py`
+**El producer real está verificado y funcionando** — datos con `"source": "aisstream_live"` confirmados llegando a Pub/Sub. El simulador sigue disponible como fallback para desarrollo offline o cuando el servicio esté inestable.
+
+**Producer real**: `python ingestion/ais_producer/main.py`
+**Simulador**: `python ingestion/simulator/main.py --vessels 20 --interval 3.0`
 
 ### Dependencias Python no persistentes en Docker
 
