@@ -20,7 +20,6 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    before_sleep_log,
     RetryError,
 )
 
@@ -34,7 +33,6 @@ from producer import PubSubPublisher
 structlog.configure(
     processors=[
         structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
@@ -44,9 +42,7 @@ structlog.configure(
     ],
     logger_factory=structlog.PrintLoggerFactory(),
 )
-
 logger = structlog.get_logger(__name__)
-
 
 # =============================================================================
 # WebSocket connection and message loop
@@ -91,7 +87,12 @@ async def process_message(raw_message: str, publisher: PubSubPublisher) -> None:
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=2, min=2, max=60),
-    before_sleep=before_sleep_log(logger, "warning"),
+    before_sleep=lambda retry_state: logger.warning(
+        "retrying_connection",
+        attempt=retry_state.attempt_number,
+        wait=retry_state.next_action.sleep,
+        error=str(retry_state.outcome.exception()),
+    ),
 )
 async def connect_and_stream(publisher: PubSubPublisher) -> None:
     """
@@ -104,9 +105,10 @@ async def connect_and_stream(publisher: PubSubPublisher) -> None:
 
     async with websockets.connect(
         Config.AIS_WS_URL,
-        ping_interval=30,     # send WebSocket ping every 30s
-        ping_timeout=10,      # close connection if no pong in 10s
-        close_timeout=10,
+        open_timeout=30,
+        #ping_interval=30,     # send WebSocket ping every 30s
+        #ping_timeout=10,      # close connection if no pong in 10s
+        #close_timeout=10,
         max_size=2**23,       # 8MB max message size
     ) as ws:
         await subscribe(ws)
