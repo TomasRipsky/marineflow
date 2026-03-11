@@ -1,0 +1,160 @@
+# =============================================================================
+# MARINEFLOW — Docker Compose
+# Local development stack
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Spark Master
+  # ---------------------------------------------------------------------------
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: marineflow-spark-master
+    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    environment:
+      - SPARK_MASTER_WEBUI_PORT=8080
+      - SPARK_MASTER_PORT=7077
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
+      - GOOGLE_CLOUD_PROJECT=marineflow-489815
+    ports:
+      - "4040:8080"   # Spark Master UI
+      - "7077:7077"   # Spark Master port
+    volumes:
+      - ./processing:/opt/spark/processing
+      - C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json:/tmp/adc.json:ro
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
+  # Spark Worker
+  # ---------------------------------------------------------------------------
+  spark-worker:
+    image: apache/spark:3.5.0
+    container_name: marineflow-spark-worker
+    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    environment:
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_WEBUI_PORT=8081
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
+      - GOOGLE_CLOUD_PROJECT=marineflow-489815
+    ports:
+      - "4041:8081"   # Spark Worker UI
+    volumes:
+      - ./processing:/opt/spark/processing
+      - C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json:/tmp/adc.json:ro
+    depends_on:
+      - spark-master
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — backend for Airflow and MLflow
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15
+    container_name: marineflow-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-marineflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-marineflow_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-marineflow}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - marineflow-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marineflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis — cache for FastAPI predictions
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: marineflow-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - marineflow-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MLflow — model tracking and registry
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: python:3.11-slim
+    container_name: marineflow-mlflow
+    command: >
+      bash -c "pip install mlflow==2.11.1 psycopg2-binary &&
+               mlflow server
+               --backend-store-uri postgresql://marineflow:marineflow_dev_password@postgres:5432/marineflow
+               --default-artifact-root gs://${GCS_BUCKET}/models/mlflow
+               --host 0.0.0.0
+               --port 5001"
+    ports:
+      - "5001:5001"
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
+      - GOOGLE_CLOUD_PROJECT=marineflow-489815
+    volumes:
+      - C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json:/tmp/adc.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — pipeline metrics
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: marineflow-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
+  # Grafana — operational dashboards
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: marineflow-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-marineflow_dev}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - marineflow-net
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres-data:
+  grafana-data:
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  marineflow-net:
+    driver: bridge

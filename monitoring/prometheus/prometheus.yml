@@ -1,0 +1,23 @@
+# =============================================================================
+# MARINEFLOW — Prometheus Configuration
+# monitoring/prometheus/prometheus.yml
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: "marineflow"
+    environment: "dev"
+
+scrape_configs:
+  # Spark Master metrics
+  - job_name: "spark-master"
+    static_configs:
+      - targets: ["spark-master:8080"]
+
+  # FastAPI application metrics (Phase 5)
+  - job_name: "marineflow-api"
+    static_configs:
+      - targets: ["fastapi:8000"]
+    metrics_path: "/metrics"

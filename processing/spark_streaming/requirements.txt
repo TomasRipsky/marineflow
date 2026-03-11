@@ -1,0 +1,18 @@
+# =============================================================================
+# MARINEFLOW — Spark Streaming Dependencies
+# processing/spark_streaming/requirements.txt
+# =============================================================================
+
+# PySpark
+pyspark==3.5.0
+
+# GCP clients
+google-cloud-pubsub==2.21.1
+google-cloud-storage==2.16.0
+google-cloud-bigquery==3.19.0
+
+# Environment variable management
+python-dotenv==1.0.1
+
+# Structured logging
+structlog==24.1.0
