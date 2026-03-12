@@ -151,6 +151,7 @@ coverage.xml
 htmlcov/
 .tox/
 .nox/
+test/
 
 # -----------------------------------------------------------------------------
 # GENERATED DOCUMENTATION

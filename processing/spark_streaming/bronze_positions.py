@@ -121,25 +121,20 @@ def create_spark_session():
         .appName("MarineFlow-Bronze-Positions")
         .master(os.getenv("SPARK_MASTER", "local[*]"))
         .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY", "3g"))
-        .config(
-            "spark.hadoop.fs.gs.impl",
-            "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem",
-        )
-        .config(
-            "spark.hadoop.fs.AbstractFileSystem.gs.impl",
-            "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
-        )
-        .config(
-            "spark.hadoop.google.cloud.auth.type",
-            "APPLICATION_DEFAULT",
-        )
+        .config("spark.hadoop.fs.gs.impl",
+                "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl",
+                "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
+        # Fix GCS _temporary directory race condition
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.cleanup-failures.ignored", "true")
         .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )
 
     spark.sparkContext.setLogLevel("WARN")
     return spark
-
 
 # =============================================================================
 # Bronze processing
@@ -209,7 +204,7 @@ def process_batch(spark, messages: List[dict], batch_number: int) -> int:
         "partition_date": F.to_date(F.col("event_timestamp")),
         "partition_hour": F.hour(F.col("event_timestamp")),
     })
-
+    
     record_count = enriched.count()
 
     enriched.write.mode("append").partitionBy(

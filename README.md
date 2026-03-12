@@ -290,14 +290,125 @@ El schema se define explícitamente (no inferido) porque algunos campos pueden s
 
 ---
 
-### Fase 3 — Silver, Gold y dbt
+### Fase 3 — Silver Layer
+
+**Estado: ✅ Completada (Silver) | ⏳ Pendiente (Gold + dbt)**
+
+#### ¿Qué es la capa Silver?
+
+Silver es la capa de datos **limpios y enriquecidos**. A diferencia de Bronze (inmutable y raw), Silver aplica lógica de negocio, normaliza valores inconsistentes y añade contexto geoespacial. Es la capa que consumen los modelos ML y las queries analíticas.
+
+#### Transformaciones aplicadas
+
+**1. Deduplicación**
+Elimina registros duplicados por `(mmsi, event_timestamp)`. Mantiene el más reciente por `ingestion_timestamp`. Los duplicados ocurren cuando el mismo mensaje AIS es recibido por múltiples estaciones terrestres simultáneamente.
+
+**2. Normalización de vessel_type**
+Los códigos AIS son enteros (e.g. `70-79` = cargo, `80-89` = tanker). Se convierten a categorías legibles:
+
+| Código AIS | Categoría |
+|-----------|-----------|
+| 70-79 | cargo |
+| 80-89 | tanker |
+| 60-69 | passenger |
+| 30-35 | fishing |
+| 52-53 | tug |
+| 50-59 | special_craft |
+| resto | other |
+
+**3. Enriquecimiento geoespacial**
+Añade columnas derivadas de lat/lon usando bounding boxes aproximados:
+- `ocean_region`: región oceánica (mediterranean, atlantic_west, pacific, indian_ocean, etc.)
+- `nearest_port` + `is_in_port_zone`: si el barco está dentro del radio de 15 puertos principales mundiales (Rotterdam, Shanghai, Singapore, Los Angeles, etc.)
+- `eez_country`: país de la Zona Económica Exclusiva más próxima
+
+**4. Deltas de movimiento**
+Usando `Window.partitionBy("mmsi").orderBy("event_timestamp")`:
+- `speed_change_rate`: cambio de velocidad entre mensajes consecutivos del mismo barco — feature para anomaly detection
+- `heading_change_degrees`: cambio de rumbo entre mensajes consecutivos — feature para anomaly detection
+
+**5. Normalización de destino**
+El campo `destination` en AIS es texto libre escrito por el capitán — puede ser "ROTTERDAM", "RTM", "rotterdam", "RDAM". Se normaliza a mayúsculas con trim de whitespace.
+
+#### Arquitectura del job Silver
+
+```
+GCS Bronze Parquet
+      │  spark.read.parquet(BRONZE_INPUT_DIR)
+      ▼
+Deduplicate (Window)
+      │  keep latest per (mmsi, event_timestamp)
+      ▼
+Normalize vessel_type
+      │  AIS codes → cargo/tanker/passenger/fishing/other
+      ▼
+Geospatial enrichment
+      │  ocean_region, nearest_port, is_in_port_zone
+      ▼
+Movement deltas (Window)
+      │  speed_change_rate, heading_change_degrees → cast DoubleType
+      ▼
+Normalize destination
+      │  UPPER + TRIM
+      ▼
+     ┌──────────────────┐
+     │                  │
+     ▼                  ▼
+GCS Silver Parquet   BigQuery
+silver/vessel_       marineflow_silver.vessel_positions_clean
+positions/
+```
+
+#### JARs necesarios para Silver
+
+Silver necesita dos JARs (Bronze solo necesitaba el de GCS):
+
+- **`gcs-connector-hadoop3-latest.jar`**: lectura de Bronze y escritura Silver en GCS
+- **`spark-bigquery.jar`**: escritura en BigQuery
+
+**Importante**: el JAR de BigQuery debe descargarse desde Maven con el nombre completo. El archivo de GitHub releases estaba vacío (0 bytes).
+
+Descarga correcta:
+```powershell
+curl -L -o processing/jars/spark-bigquery.jar "https://repo1.maven.org/maven2/com/google/cloud/spark/spark-bigquery-with-dependencies_2.12/0.36.1/spark-bigquery-with-dependencies_2.12-0.36.1.jar"
+```
+
+#### Comando spark-submit Silver
+
+```powershell
+docker exec `
+  -e GCP_PROJECT_ID=marineflow-489815 `
+  -e GCS_BUCKET=marineflow-lake-marineflow-489815 `
+  -e BQ_DATASET_SILVER=marineflow_silver `
+  -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json `
+  -e GOOGLE_CLOUD_PROJECT=marineflow-489815 `
+  -e SILVER_BATCH_INTERVAL=60 `
+  -e SILVER_MAX_BATCHES=1 `
+  marineflow-spark-master /opt/spark/bin/spark-submit `
+  --master local[*] `
+  --driver-memory 3g `
+  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar,/opt/spark/processing/jars/spark-bigquery.jar `
+  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar:/opt/spark/processing/jars/spark-bigquery.jar `
+  /opt/spark/processing/spark_streaming/silver_positions.py
+```
+
+**Nota sobre `--driver-class-path`**: Silver requiere este flag adicional porque el conector de BigQuery necesita registrar su DataSource en la JVM del driver al arrancar. Sin él Spark lanza `DATA_SOURCE_NOT_FOUND: bigquery`.
+
+#### Lecciones aprendidas en Silver
+
+**Schema mismatch en BigQuery**: `heading_change_degrees` se calculaba como `IntegerType` (resta de dos enteros) pero BigQuery tenía la columna como `FLOAT`. Fix: castear explícitamente a `DoubleType()` en `calculate_movement_deltas`.
+
+**Window functions y rendimiento**: deduplicación y deltas usan window functions que requieren shuffle. Con ~9.000 registros en `local[*]` el job tarda ~6 minutos. Normal para modo local — en Dataproc con múltiples workers sería segundos.
+
+---
+
+### Fase 4 — Gold, dbt y Airflow
 
 **Estado: ⏳ Pendiente**
 
 Planificado:
-- `silver_positions.py`: deduplicación, normalización de vessel_type, enriquecimiento geoespacial (región oceánica, zona portuaria), deltas de velocidad y rumbo
 - dbt models para capa Gold: agregaciones por puerto, por bandera, por ruta
-- Airflow DAGs para orquestación diaria
+- Airflow DAGs para orquestación diaria Silver → Gold
 
 ---
 
