@@ -144,6 +144,26 @@ def _now_utc() -> str:
     """Return current UTC timestamp as ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
 
+def _parse_ais_timestamp(raw_ts: Optional[str]) -> str:
+    """
+    Normalize aisstream.io timestamp format to ISO 8601.
+    Input:  "2026-03-12 13:09:41.810776108 +0000 UTC"
+    Output: "2026-03-12T13:09:41.810776+00:00"
+    """
+    if not raw_ts:
+        return _now_utc()
+    try:
+        clean = raw_ts.replace(" UTC", "").strip()
+        parts = clean.split(".")
+        if len(parts) == 2:
+            tz_idx = parts[1].find(" ")
+            if tz_idx > 0:
+                decimal = parts[1][:tz_idx][:6]
+                tz = parts[1][tz_idx:]
+                clean = f"{parts[0]}.{decimal}{tz}"
+        return datetime.fromisoformat(clean).isoformat()
+    except Exception:
+        return _now_utc()
 
 # =============================================================================
 # Main parsing functions
@@ -168,7 +188,7 @@ def parse_position_report(raw: dict) -> Optional[VesselPosition]:
         # Skip invalid coordinates (AIS uses 91/181 as "not available")
         if lat is None or lon is None or abs(lat) > 90 or abs(lon) > 180:
             return None
-
+        
         return VesselPosition(
             mmsi=mmsi,
             vessel_name=metadata.get("ShipName", "").strip() or None,
@@ -180,7 +200,7 @@ def parse_position_report(raw: dict) -> Optional[VesselPosition]:
             heading=message.get("TrueHeading"),
             navigational_status=_get_nav_status(message.get("NavigationalStatus")),
             flag_country=_mmsi_to_flag(mmsi),
-            event_timestamp=metadata.get("time_utc", _now_utc()),
+            event_timestamp=_parse_ais_timestamp(metadata.get("TimeUtc") or metadata.get("time_utc")),
             ingestion_timestamp=_now_utc(),
             raw_message=json.dumps(raw),
         )
