@@ -75,30 +75,48 @@ resource "google_bigquery_table" "vessel_positions_raw" {
     field = "ingestion_timestamp"
   }
 
-  clustering = ["mmsi", "vessel_type"]
-
-  labels = merge(var.labels, { layer = "bronze", entity = "vessel_positions" })
+  clustering = ["mmsi"]
 
   schema = jsonencode([
-    { name = "mmsi",                type = "STRING",    mode = "REQUIRED", description = "Maritime Mobile Service Identity — unique vessel identifier" },
-    { name = "vessel_name",         type = "STRING",    mode = "NULLABLE", description = "Vessel name as broadcast" },
-    { name = "vessel_type",         type = "STRING",    mode = "NULLABLE", description = "Vessel type (cargo, tanker, passenger, etc.)" },
-    { name = "latitude",            type = "FLOAT64",   mode = "REQUIRED", description = "Position latitude in decimal degrees" },
-    { name = "longitude",           type = "FLOAT64",   mode = "REQUIRED", description = "Position longitude in decimal degrees" },
-    { name = "speed_over_ground",   type = "FLOAT64",   mode = "NULLABLE", description = "Speed over ground in knots" },
-    { name = "course_over_ground",  type = "FLOAT64",   mode = "NULLABLE", description = "Course over ground in degrees" },
-    { name = "heading",             type = "INTEGER",   mode = "NULLABLE", description = "True heading of the vessel in degrees" },
-    { name = "navigational_status", type = "STRING",    mode = "NULLABLE", description = "Navigational status (under way, anchored, moored, etc.)" },
-    { name = "destination",         type = "STRING",    mode = "NULLABLE", description = "Destination as declared by the vessel" },
-    { name = "eta",                 type = "STRING",    mode = "NULLABLE", description = "ETA as declared by the vessel (MMDDHHmm format)" },
-    { name = "draught",             type = "FLOAT64",   mode = "NULLABLE", description = "Vessel draught in metres" },
-    { name = "flag_country",        type = "STRING",    mode = "NULLABLE", description = "Flag state country code (ISO 3166-1 alpha-2)" },
-    { name = "imo_number",          type = "STRING",    mode = "NULLABLE", description = "IMO vessel identification number" },
-    { name = "callsign",            type = "STRING",    mode = "NULLABLE", description = "Radio call sign" },
-    { name = "event_timestamp",     type = "TIMESTAMP", mode = "REQUIRED", description = "Original AIS event timestamp" },
-    { name = "ingestion_timestamp", type = "TIMESTAMP", mode = "REQUIRED", description = "Timestamp when the message was ingested into the pipeline" },
-    { name = "source",              type = "STRING",    mode = "NULLABLE", description = "Message source: aisstream_live or simulator" },
-    { name = "raw_message",         type = "STRING",    mode = "NULLABLE", description = "Original AIS message in JSON format for audit purposes" }
+    # Exact mirror of the aisstream.io WebSocket message.
+    # Field names match the original JSON keys — no renaming, no transformation.
+    # Two sections as in the raw message:
+    #   Message.PositionReport: data from the vessel transponder (AIS standard)
+    #   MetaData: fields added by aisstream.io (not from the transponder)
+    # Enrichments (flag_country, nav status string, vessel_type) happen in Silver.
+    # --- Message.PositionReport (vessel transponder — AIS ITU-R M.1371-5) ---
+    { name = "Cog",                      type = "FLOAT64",   mode = "NULLABLE", description = "Course over ground in degrees" },
+    { name = "CommunicationState",       type = "INTEGER",   mode = "NULLABLE", description = "AIS communication state" },
+    { name = "Latitude",                 type = "FLOAT64",   mode = "REQUIRED", description = "Position latitude in decimal degrees" },
+    { name = "Longitude",                type = "FLOAT64",   mode = "REQUIRED", description = "Position longitude in decimal degrees" },
+    { name = "MessageID",                type = "INTEGER",   mode = "NULLABLE", description = "AIS message type ID (1, 2 or 3 for PositionReport)" },
+    { name = "NavigationalStatus",       type = "INTEGER",   mode = "NULLABLE", description = "Raw navigational status integer per ITU-R M.1371-5" },
+    { name = "PositionAccuracy",         type = "BOOLEAN",   mode = "NULLABLE", description = "Position accuracy flag" },
+    { name = "Raim",                     type = "BOOLEAN",   mode = "NULLABLE", description = "Receiver autonomous integrity monitoring flag" },
+    { name = "RateOfTurn",               type = "INTEGER",   mode = "NULLABLE", description = "Rate of turn — raw AIS value" },
+    { name = "RepeatIndicator",          type = "INTEGER",   mode = "NULLABLE", description = "Message repeat indicator" },
+    { name = "Sog",                      type = "FLOAT64",   mode = "NULLABLE", description = "Speed over ground in knots" },
+    { name = "Spare",                    type = "INTEGER",   mode = "NULLABLE", description = "Spare bits" },
+    { name = "SpecialManoeuvreIndicator",type = "INTEGER",   mode = "NULLABLE", description = "Special manoeuvre indicator" },
+    { name = "Timestamp",                type = "INTEGER",   mode = "NULLABLE", description = "UTC second when report was generated" },
+    { name = "TrueHeading",              type = "INTEGER",   mode = "NULLABLE", description = "True heading in degrees — 511 means unavailable" },
+    { name = "UserID",                   type = "INTEGER",   mode = "REQUIRED", description = "MMSI from transponder (integer)" },
+    { name = "Valid",                    type = "BOOLEAN",   mode = "NULLABLE", description = "Message validity flag" },
+    # --- MetaData (added by aisstream.io, not from the transponder) ---
+    { name = "MMSI",                     type = "STRING",    mode = "REQUIRED", description = "MMSI as string — from aisstream.io MetaData" },
+    { name = "MMSI_String",              type = "STRING",    mode = "NULLABLE", description = "MMSI string duplicate from aisstream.io MetaData" },
+    { name = "ShipName",                 type = "STRING",    mode = "NULLABLE", description = "Vessel name — raw untrimmed from aisstream.io MetaData" },
+    { name = "time_utc",                 type = "TIMESTAMP", mode = "REQUIRED", description = "Event timestamp from aisstream.io — normalized to ISO 8601" },
+    # --- Pipeline metadata (added by our ingestion layer) ---
+    { name = "ingestion_timestamp",      type = "TIMESTAMP", mode = "REQUIRED", description = "Timestamp when message was received by our producer" },
+    { name = "raw_message",              type = "STRING",    mode = "NULLABLE", description = "Full original JSON message — complete audit record" },
+    # --- Lineage fields ---
+    { name = "_source_system",           type = "STRING",    mode = "REQUIRED", description = "Origin system: aisstream_live or simulator" },
+    { name = "_source_file",             type = "STRING",    mode = "NULLABLE", description = "GCS partition path of the Parquet file containing this record" },
+    { name = "_pubsub_message_id",       type = "STRING",    mode = "NULLABLE", description = "Pub/Sub message ID — enables tracing back to original message" },
+    { name = "_batch_id",                type = "STRING",    mode = "REQUIRED", description = "Spark batch ID that processed this record" },
+    { name = "_pipeline_version",        type = "STRING",    mode = "REQUIRED", description = "Pipeline version tag that produced this record" },
+    { name = "_ingestion_date",          type = "DATE",      mode = "REQUIRED", description = "Partition date derived from ingestion_timestamp" }
   ])
 }
 
@@ -142,7 +160,13 @@ resource "google_bigquery_table" "vessel_positions_clean" {
     { name = "speed_change_rate",       type = "FLOAT64",   mode = "NULLABLE", description = "Speed delta compared to previous position" },
     { name = "heading_change_degrees",  type = "FLOAT64",   mode = "NULLABLE", description = "Heading delta compared to previous position" },
     { name = "event_timestamp",         type = "TIMESTAMP", mode = "REQUIRED" },
-    { name = "processing_timestamp",    type = "TIMESTAMP", mode = "REQUIRED" }
+    { name = "processing_timestamp",    type = "TIMESTAMP", mode = "REQUIRED" },
+    # --- Lineage fields propagated from Bronze ---
+    { name = "_source_system",          type = "STRING",    mode = "NULLABLE", description = "Origin system propagated from Bronze: aisstream_live or simulator" },
+    { name = "_source_file",            type = "STRING",    mode = "NULLABLE", description = "GCS Bronze Parquet file this record was read from" },
+    { name = "_bronze_batch_id",        type = "STRING",    mode = "NULLABLE", description = "Bronze batch ID that originally ingested this record" },
+    { name = "_silver_batch_id",        type = "STRING",    mode = "REQUIRED", description = "Silver batch ID that transformed this record" },
+    { name = "_pipeline_version",       type = "STRING",    mode = "NULLABLE", description = "Pipeline version that produced the Bronze record" }
   ])
 }
 
