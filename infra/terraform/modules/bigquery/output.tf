@@ -1,6 +1,5 @@
 # =============================================================================
 # MARINEFLOW — BigQuery Module: Outputs
-# infra/terraform/modules/bigquery/outputs.tf
 # =============================================================================
 
 # --- Dataset IDs ---
@@ -35,19 +34,19 @@ output "features_dataset_id" {
   value       = google_bigquery_dataset.ml_features.dataset_id
 }
 
-# --- Table IDs (used by Spark writers and dbt) ---
+# --- External Table URIs (Bronze + Silver — source of truth is GCS) ---
 
 output "vessel_positions_raw_table" {
-  description = "Fully qualified table ID for vessel_positions_raw (project.dataset.table)"
+  description = "Fully qualified external table ID for vessel_positions_raw"
   value       = "${var.project_id}.${google_bigquery_dataset.bronze.dataset_id}.${google_bigquery_table.vessel_positions_raw.table_id}"
 }
 
 output "vessel_positions_clean_table" {
-  description = "Fully qualified table ID for vessel_positions_clean (project.dataset.table)"
+  description = "Fully qualified external table ID for vessel_positions_clean"
   value       = "${var.project_id}.${google_bigquery_dataset.silver.dataset_id}.${google_bigquery_table.vessel_positions_clean.table_id}"
 }
 
-output "maritime_alerts_table" {
-  description = "Fully qualified table ID for maritime_alerts (project.dataset.table)"
-  value       = "${var.project_id}.${google_bigquery_dataset.gold.dataset_id}.${google_bigquery_table.maritime_alerts.table_id}"
+output "vessel_metadata_table" {
+  description = "Fully qualified external table ID for vessel_metadata"
+  value       = "${var.project_id}.${google_bigquery_dataset.silver.dataset_id}.${google_bigquery_table.vessel_metadata.table_id}"
 }

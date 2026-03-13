@@ -1,0 +1,36 @@
+name: marineflow
+version: "1.0.0"
+config-version: 2
+
+profile: marineflow
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# =============================================================================
+# Model configuration per layer
+# =============================================================================
+models:
+  marineflow:
+
+    staging:
+      +materialized: view          # staging = always views, never stored
+      +dataset: marineflow_silver  # reads from Silver dataset
+      +tags: ["staging"]
+
+    silver:
+      +materialized: view
+      +dataset: marineflow_silver
+      +tags: ["silver"]
+
+    gold:
+      +materialized: table         # gold = persisted tables for analytics + ML
+      +dataset: marineflow_gold
+      +tags: ["gold"]
+      +partition_by:
+        field: "date_day"
+        data_type: "date"
+      +cluster_by: ["mmsi"]
