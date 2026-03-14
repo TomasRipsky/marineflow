@@ -79,7 +79,7 @@ resource "google_bigquery_table" "vessel_positions_raw" {
   external_data_configuration {
     source_format    = "PARQUET"
     autodetect       = false
-    source_uris = ["gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_positions/*"]
+    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_positions/*"]
 
     hive_partitioning_options {
       mode                     = "AUTO"
@@ -92,36 +92,36 @@ resource "google_bigquery_table" "vessel_positions_raw" {
     }
 
     schema = jsonencode([
-      { name = "Cog",                       type = "FLOAT64",   mode = "NULLABLE" },
+      # --- Message.PositionReport (vessel transponder — AIS ITU-R M.1371-5) ---
+      { name = "Cog",                       type = "FLOAT64",   mode = "NULLABLE", description = "Course over ground in degrees" },
       { name = "CommunicationState",        type = "INTEGER",   mode = "NULLABLE" },
-      { name = "Latitude",                  type = "FLOAT64",   mode = "NULLABLE" },
-      { name = "Longitude",                 type = "FLOAT64",   mode = "NULLABLE" },
-      { name = "MessageID",                 type = "INTEGER",   mode = "NULLABLE" },
-      { name = "NavigationalStatus",        type = "INTEGER",   mode = "NULLABLE" },
+      { name = "Latitude",                  type = "FLOAT64",   mode = "NULLABLE", description = "Position latitude in decimal degrees" },
+      { name = "Longitude",                 type = "FLOAT64",   mode = "NULLABLE", description = "Position longitude in decimal degrees" },
+      { name = "MessageID",                 type = "INTEGER",   mode = "NULLABLE", description = "AIS message type ID" },
+      { name = "NavigationalStatus",        type = "INTEGER",   mode = "NULLABLE", description = "Raw navigational status integer — translated in Silver" },
       { name = "PositionAccuracy",          type = "BOOLEAN",   mode = "NULLABLE" },
       { name = "Raim",                      type = "BOOLEAN",   mode = "NULLABLE" },
       { name = "RateOfTurn",                type = "INTEGER",   mode = "NULLABLE" },
       { name = "RepeatIndicator",           type = "INTEGER",   mode = "NULLABLE" },
-      { name = "Sog",                       type = "FLOAT64",   mode = "NULLABLE" },
+      { name = "Sog",                       type = "FLOAT64",   mode = "NULLABLE", description = "Speed over ground in knots" },
       { name = "Spare",                     type = "INTEGER",   mode = "NULLABLE" },
       { name = "SpecialManoeuvreIndicator", type = "INTEGER",   mode = "NULLABLE" },
-      { name = "Timestamp",                 type = "INTEGER",   mode = "NULLABLE" },
-      { name = "TrueHeading",               type = "INTEGER",   mode = "NULLABLE" },
-      { name = "UserID",                    type = "INTEGER",   mode = "NULLABLE" },
+      { name = "Timestamp",                 type = "INTEGER",   mode = "NULLABLE", description = "UTC second when report was generated" },
+      { name = "TrueHeading",               type = "INTEGER",   mode = "NULLABLE", description = "True heading — 511 means unavailable" },
+      { name = "UserID",                    type = "INTEGER",   mode = "NULLABLE", description = "MMSI from transponder (integer)" },
       { name = "Valid",                     type = "BOOLEAN",   mode = "NULLABLE" },
-      { name = "MMSI",                      type = "STRING",    mode = "NULLABLE" },
+      # --- MetaData (added by aisstream.io) ---
+      { name = "MMSI",                      type = "STRING",    mode = "NULLABLE", description = "MMSI as string" },
       { name = "MMSI_String",               type = "STRING",    mode = "NULLABLE" },
-      { name = "ShipName",                  type = "STRING",    mode = "NULLABLE" },
-      { name = "time_utc",                  type = "TIMESTAMP", mode = "NULLABLE" },
-      { name = "ingestion_timestamp",       type = "TIMESTAMP", mode = "NULLABLE" },
-      { name = "source",                    type = "STRING",    mode = "NULLABLE" },
-      { name = "raw_message",               type = "STRING",    mode = "NULLABLE" },
-      { name = "_pubsub_message_id",        type = "STRING",    mode = "NULLABLE" },
-      { name = "_source_system",            type = "STRING",    mode = "NULLABLE" },
-      { name = "_source_file",              type = "STRING",    mode = "NULLABLE" },
-      { name = "_batch_id",                 type = "STRING",    mode = "NULLABLE" },
+      { name = "ShipName",                  type = "STRING",    mode = "NULLABLE", description = "Raw untrimmed vessel name" },
+      { name = "time_utc",                  type = "TIMESTAMP", mode = "NULLABLE", description = "Event timestamp normalized to ISO 8601" },
+      # --- Pipeline metadata ---
+      { name = "ingestion_timestamp",       type = "TIMESTAMP", mode = "NULLABLE", description = "When Bronze processed this record" },
+      { name = "_source_system",            type = "STRING",    mode = "NULLABLE", description = "aisstream_live or simulator" },
+      { name = "_batch_id",                 type = "STRING",    mode = "NULLABLE", description = "Spark micro-batch ID" },
       { name = "_pipeline_version",         type = "STRING",    mode = "NULLABLE" },
-      { name = "_ingestion_date",           type = "DATE",      mode = "NULLABLE" }
+      { name = "_ingestion_date",           type = "DATE",      mode = "NULLABLE" },
+      { name = "_source_file",              type = "STRING",    mode = "NULLABLE" }
     ])
   }
 }
@@ -158,9 +158,11 @@ resource "google_bigquery_table" "vessel_positions_clean" {
     }
 
     schema = jsonencode([
+      # --- Identity ---
       { name = "mmsi",                   type = "STRING",    mode = "NULLABLE" },
       { name = "vessel_name",            type = "STRING",    mode = "NULLABLE" },
       { name = "flag_country",           type = "STRING",    mode = "NULLABLE" },
+      # --- Position ---
       { name = "latitude",               type = "FLOAT64",   mode = "NULLABLE" },
       { name = "longitude",              type = "FLOAT64",   mode = "NULLABLE" },
       { name = "ocean_region",           type = "STRING",    mode = "NULLABLE" },
@@ -168,18 +170,22 @@ resource "google_bigquery_table" "vessel_positions_clean" {
       { name = "eez_country",            type = "STRING",    mode = "NULLABLE" },
       { name = "is_in_port_zone",        type = "BOOLEAN",   mode = "NULLABLE" },
       { name = "distance_to_port_km",    type = "FLOAT64",   mode = "NULLABLE" },
+      # --- Movement ---
       { name = "speed_over_ground",      type = "FLOAT64",   mode = "NULLABLE" },
       { name = "course_over_ground",     type = "FLOAT64",   mode = "NULLABLE" },
       { name = "heading",                type = "INTEGER",   mode = "NULLABLE" },
       { name = "navigational_status",    type = "STRING",    mode = "NULLABLE" },
       { name = "speed_change_rate",      type = "FLOAT64",   mode = "NULLABLE" },
       { name = "heading_change_degrees", type = "FLOAT64",   mode = "NULLABLE" },
+      # --- Timestamps ---
       { name = "event_timestamp",        type = "TIMESTAMP", mode = "NULLABLE" },
       { name = "processing_timestamp",   type = "TIMESTAMP", mode = "NULLABLE" },
+      # --- Lineage ---
       { name = "_source_system",         type = "STRING",    mode = "NULLABLE" },
       { name = "_source_file",           type = "STRING",    mode = "NULLABLE" },
       { name = "_bronze_batch_id",       type = "STRING",    mode = "NULLABLE" },
-      { name = "_pipeline_version",      type = "STRING",    mode = "NULLABLE" }
+      { name = "_pipeline_version",      type = "STRING",    mode = "NULLABLE" },
+      { name = "_silver_batch_id",       type = "STRING",    mode = "NULLABLE" }
     ])
   }
 }
@@ -230,3 +236,4 @@ resource "google_bigquery_table" "vessel_metadata" {
     ])
   }
 }
+

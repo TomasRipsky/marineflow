@@ -68,11 +68,12 @@ module "gcs" {
 module "pubsub" {
   source                 = "./modules/pubsub"
   project_id             = var.project_id
+  gcs_bucket             = "${var.gcs_bucket_name}-${var.project_id}"
   message_retention_days = var.pubsub_message_retention_days
   ack_deadline_seconds   = var.pubsub_ack_deadline_seconds
   labels                 = local.common_labels
 
-  depends_on = [module.iam]
+  depends_on = [module.iam, module.gcs]
 }
 
 module "bigquery" {

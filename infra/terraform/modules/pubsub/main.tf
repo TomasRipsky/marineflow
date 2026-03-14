@@ -100,3 +100,88 @@ resource "google_pubsub_subscription" "api_alerts_subscription" {
     ttl = ""
   }
 }
+
+# -----------------------------------------------------------------------------
+# IAM — Pub/Sub service account needs Storage Object Creator on the GCS bucket
+# This is required for Cloud Storage subscriptions to write files.
+# -----------------------------------------------------------------------------
+# Pub/Sub needs both roles at bucket level — GCP requirement for GCS subscriptions
+resource "google_storage_bucket_iam_member" "pubsub_gcs_writer" {
+  bucket = var.gcs_bucket
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${var.pubsub_sa_email}"
+}
+
+resource "google_storage_bucket_iam_member" "pubsub_gcs_reader" {
+  bucket = var.gcs_bucket
+  role   = "roles/storage.legacyBucketReader"
+  member = "serviceAccount:${var.pubsub_sa_email}"
+}
+
+# -----------------------------------------------------------------------------
+# Cloud Storage subscriptions — vessel-positions and vessel-metadata
+#
+# GCP writes Pub/Sub messages directly to GCS as JSON files.
+# Each file contains a batch of messages in the Pub/Sub envelope format:
+#   {
+#     "subscription": "...",
+#     "message": {
+#       "data": "<base64 encoded JSON>",
+#       "messageId": "...",
+#       "publishTime": "...",
+#       "attributes": {...}
+#     }
+#   }
+#
+# Spark Bronze reads these files with Structured Streaming.
+# max_duration=60s means a new file is flushed at most every 60 seconds.
+# -----------------------------------------------------------------------------
+resource "google_pubsub_subscription" "positions_gcs" {
+  name    = "vessel-positions-gcs-sub"
+  topic   = google_pubsub_topic.topics["vessel-positions"].name
+  project = var.project_id
+  labels  = merge(var.labels, { consumer = "gcs", topic = "vessel-positions" })
+
+  cloud_storage_config {
+    bucket          = var.gcs_bucket
+    filename_prefix = "pubsub-landing/vessel-positions/"
+    filename_suffix = ".json"
+
+    max_duration = "60s"
+    max_bytes    = 10485760  # 10 MB — flush whichever comes first
+  }
+
+  expiration_policy {
+    ttl = ""
+  }
+
+  depends_on = [
+    google_storage_bucket_iam_member.pubsub_gcs_writer,
+    google_storage_bucket_iam_member.pubsub_gcs_reader,
+  ]
+}
+
+resource "google_pubsub_subscription" "metadata_gcs" {
+  name    = "vessel-metadata-gcs-sub"
+  topic   = google_pubsub_topic.topics["vessel-metadata"].name
+  project = var.project_id
+  labels  = merge(var.labels, { consumer = "gcs", topic = "vessel-metadata" })
+
+  cloud_storage_config {
+    bucket          = var.gcs_bucket
+    filename_prefix = "pubsub-landing/vessel-metadata/"
+    filename_suffix = ".json"
+
+    max_duration = "60s"
+    max_bytes    = 10485760
+  }
+
+  expiration_policy {
+    ttl = ""
+  }
+
+  depends_on = [
+    google_storage_bucket_iam_member.pubsub_gcs_writer,
+    google_storage_bucket_iam_member.pubsub_gcs_reader,
+  ]
+}
