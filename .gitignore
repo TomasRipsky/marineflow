@@ -93,6 +93,8 @@ data/
 checkpoints/
 delta_lake/
 warehouse/
+transformation/dbt/target/
+transformation/dbt/dbt_packages/
 
 # -----------------------------------------------------------------------------
 # SPARK

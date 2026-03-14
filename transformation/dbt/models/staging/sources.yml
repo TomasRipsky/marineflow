@@ -1,0 +1,32 @@
+version: 2
+
+sources:
+  - name: silver
+    database: marineflow-489815
+    schema: marineflow_silver
+    description: "Cleaned and enriched vessel data from the Silver Spark jobs"
+
+    tables:
+      - name: vessel_positions_clean
+        description: "Silver layer — deduplicated, geospatially enriched AIS positions"
+        columns:
+          - name: mmsi
+            tests: [not_null]
+          - name: latitude
+            tests: [not_null]
+          - name: longitude
+            tests: [not_null]
+          - name: event_timestamp
+            tests: [not_null]
+
+      - name: vessel_metadata
+        description: "Silver layer — static vessel data from ShipStaticData messages"
+        columns:
+          - name: mmsi
+            tests: [not_null]
+          - name: vessel_type_normalized
+            description: "Normalized vessel type category"
+          - name: destination_clean
+            description: "Cleaned destination free text"
+          - name: processing_timestamp
+            tests: [not_null]

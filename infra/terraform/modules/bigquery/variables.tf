@@ -25,3 +25,8 @@ variable "labels" {
   type        = map(string)
   default     = {}
 }
+
+variable "gcs_bucket" {
+  description = "GCS bucket name used as source for Bronze and Silver external tables"
+  type        = string
+}

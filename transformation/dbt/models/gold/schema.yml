@@ -1,0 +1,108 @@
+version: 2
+
+models:
+
+  # ---------------------------------------------------------------------------
+  # vessel_activity_summary
+  # ---------------------------------------------------------------------------
+  - name: vessel_activity_summary
+    description: >
+      Daily activity summary per vessel. Grain: one row per (mmsi, date_day).
+      Primary input for the activity classifier and ETA predictor ML models.
+    columns:
+      - name: mmsi
+        description: "Vessel MMSI"
+        tests:
+          - not_null
+      - name: date_day
+        description: "Activity date"
+        tests:
+          - not_null
+      - name: position_count
+        description: "Number of AIS position reports received"
+        tests:
+          - not_null
+      - name: avg_speed_knots
+        description: "Average speed over ground in knots"
+      - name: estimated_distance_km
+        description: "Estimated distance travelled in km"
+      - name: max_ais_gap_minutes
+        description: "Longest AIS silence gap in minutes"
+      - name: gold_processed_at
+        description: "When this Gold record was created"
+        tests:
+          - not_null
+
+    tests:
+      # Grain test — no duplicate (mmsi, date_day) pairs
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - mmsi
+            - date_day
+
+  # ---------------------------------------------------------------------------
+  # port_traffic
+  # ---------------------------------------------------------------------------
+  - name: port_traffic
+    description: >
+      Daily traffic analysis per port. Grain: one row per (nearest_port, date_day).
+      Used for port congestion monitoring and route planning analytics.
+    columns:
+      - name: nearest_port
+        description: "Port name"
+        tests:
+          - not_null
+      - name: date_day
+        description: "Traffic date"
+        tests:
+          - not_null
+      - name: unique_vessels
+        description: "Number of distinct vessels observed in this port"
+        tests:
+          - not_null
+      - name: gold_processed_at
+        tests:
+          - not_null
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - nearest_port
+            - date_day
+
+  # ---------------------------------------------------------------------------
+  # anomaly_candidates
+  # ---------------------------------------------------------------------------
+  - name: anomaly_candidates
+    description: >
+      Rule-based anomaly flags. Grain: one row per (mmsi, date_day, alert_type).
+      Primary input for the Isolation Forest anomaly detector in Phase 4.
+    columns:
+      - name: alert_id
+        description: "Surrogate key — deterministic hash of (mmsi, date_day, alert_type)"
+        tests:
+          - not_null
+          - unique
+      - name: mmsi
+        tests:
+          - not_null
+      - name: alert_type
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - ais_gap
+                - speed_anomaly
+                - dark_vessel
+                - erratic_course
+      - name: severity
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - low
+                - medium
+                - high
+      - name: gold_processed_at
+        tests:
+          - not_null

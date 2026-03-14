@@ -3,479 +3,404 @@
 
 > *"Designed a system that takes the pulse of global shipping in real time."*
 
-MarineFlow es un pipeline de data engineering end-to-end que procesa señales AIS (Automatic Identification System) de barcos en tiempo real. Ingiere, transforma, enriquece y sirve datos de posicionamiento naval a través de una arquitectura lakehouse moderna sobre GCP.
+MarineFlow is an end-to-end data engineering portfolio project that processes AIS (Automatic Identification System) vessel tracking signals in real time. It ingests, transforms, enriches and serves naval positioning data through a modern lakehouse architecture on GCP.
 
 ---
 
-## Tabla de Contenidos
+## Table of Contents
 
-1. [¿Qué es AIS y por qué es interesante?](#qué-es-ais-y-por-qué-es-interesante)
-2. [Arquitectura General](#arquitectura-general)
-3. [Stack Tecnológico](#stack-tecnológico)
-4. [Estructura del Proyecto](#estructura-del-proyecto)
-5. [Fases del Pipeline](#fases-del-pipeline)
-   - [Fase 1 — Ingesta AIS](#fase-1--ingesta-ais)
-   - [Fase 2 — Spark Bronze Layer](#fase-2--spark-bronze-layer)
-   - [Fase 3 — Silver, Gold y dbt](#fase-3--silver-gold-y-dbt) *(pendiente)*
-   - [Fase 4 — Modelos ML](#fase-4--modelos-ml) *(pendiente)*
-   - [Fase 5 — API y Dashboard](#fase-5--api-y-dashboard) *(pendiente)*
-6. [Infraestructura GCP (Terraform)](#infraestructura-gcp-terraform)
-7. [Configuración Local](#configuración-local)
-8. [Decisiones de Diseño](#decisiones-de-diseño)
-9. [Limitaciones Conocidas](#limitaciones-conocidas)
-10. [Cómo Ejecutar](#cómo-ejecutar)
-
----
-
-## ¿Qué es AIS y por qué es interesante?
-
-AIS (Automatic Identification System) es un protocolo de radio obligatorio para todos los barcos comerciales de más de 300 toneladas. Cada embarcación emite su posición GPS, velocidad, rumbo, destino y datos de identidad cada 2-10 segundos.
-
-Esto genera un stream global continuo de cientos de miles de mensajes por minuto — exactamente el tipo de dato que un pipeline de streaming moderno está diseñado para manejar.
-
-**¿Por qué es relevante para data engineering?**
-
-- **Volumen real**: ~300 mensajes/segundo con cobertura global
-- **Variedad**: posiciones, metadatos estáticos, alertas, estado de navegación
-- **Velocidad**: latencia de segundos desde el barco hasta el sistema
-- **Casos de uso reales**: logística (Amazon, Maersk), energía (seguimiento de petroleros), seguridad (detección de barcos oscuros)
+1. [What is AIS and why is it interesting?](#what-is-ais-and-why-is-it-interesting)
+2. [Architecture](#architecture)
+3. [Tech Stack](#tech-stack)
+4. [Project Structure](#project-structure)
+5. [Pipeline Phases](#pipeline-phases)
+   - [Phase 1 — AIS Ingestion](#phase-1--ais-ingestion)
+   - [Phase 2 — Spark Bronze Layer](#phase-2--spark-bronze-layer)
+   - [Phase 3 — Silver, Gold & dbt](#phase-3--silver-gold--dbt)
+   - [Phase 4 — ML Models](#phase-4--ml-models) *(pending)*
+   - [Phase 5 — API & Dashboard](#phase-5--api--dashboard) *(pending)*
+6. [GCP Infrastructure (Terraform)](#gcp-infrastructure-terraform)
+7. [Local Setup](#local-setup)
+8. [Design Decisions](#design-decisions)
+9. [Known Limitations](#known-limitations)
+10. [How to Run](#how-to-run)
 
 ---
 
-## Arquitectura General
+## What is AIS and why is it interesting?
+
+AIS (Automatic Identification System) is a mandatory radio protocol for all commercial vessels over 300 tons. Every ship broadcasts its GPS position, speed, heading, destination and identity every 2–10 seconds.
+
+This generates a continuous global stream of hundreds of thousands of messages per minute — exactly the kind of data a modern streaming pipeline is built to handle.
+
+**Why is it relevant for data engineering?**
+
+- **Real volume**: ~300 messages/second with global coverage
+- **Variety**: positions, static metadata, alerts, navigational status
+- **Velocity**: seconds of latency from vessel to system
+- **Real use cases**: logistics (Amazon, Maersk), energy (tanker tracking), security (dark vessel detection)
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         INGESTA                                      │
-│                                                                      │
-│  aisstream.io WebSocket  ──►  AIS Producer (Python)  ──►  Pub/Sub  │
-│  (señales AIS globales)        ingestion/ais_producer               │
-│                                                                      │
-│  Simulator (fallback)    ──►  8 rutas sintéticas     ──►  Pub/Sub  │
-│  (desarrollo/testing)          ingestion/simulator                  │
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │
-                    vessel-positions topic
-                    vessel-metadata topic
-                              │
-┌─────────────────────────────▼───────────────────────────────────────┐
-│                      PROCESAMIENTO (Spark)                           │
-│                                                                      │
-│  Bronze Job  ──►  Pull Pub/Sub  ──►  Validación mínima  ──►  GCS  │
-│  (micro-batch)     Python client     sin transformación    Parquet  │
-│                                                                      │
-│  Silver Job  ──►  Lee Bronze  ──►  Limpieza + Enriquecimiento      │
-│                                    geoespacial + deltas  ──►  GCS  │
-│                                                           + BigQuery│
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │
-┌─────────────────────────────▼───────────────────────────────────────┐
-│                       GOLD + ANALYTICS (dbt)                         │
-│                                                                      │
-│  dbt models  ──►  agregaciones  ──►  BigQuery Gold dataset          │
-│  Airflow     ──►  orquestación diaria                               │
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │
-┌─────────────────────────────▼───────────────────────────────────────┐
-│                          ML + SERVING                                │
-│                                                                      │
-│  MLflow  ──►  Activity Classifier (XGBoost)                        │
-│          ──►  Anomaly Detector (Isolation Forest)                   │
-│          ──►  ETA Predictor (LSTM)                                  │
-│                                                                      │
-│  FastAPI + Redis  ──►  Cloud Run  ──►  Dashboard WebSocket         │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                            INGESTION                                  │
+│                                                                       │
+│  aisstream.io WebSocket ──► AIS Producer (Python) ──► Pub/Sub        │
+│  (live global AIS feed)      ingestion/ais_producer                  │
+│                                                                       │
+│  Simulator (fallback)   ──► 8 synthetic routes   ──► Pub/Sub        │
+│  (dev / testing)              ingestion/simulator                    │
+└──────────────────────────────┬────────────────────────────────────────┘
+                               │
+                     vessel-positions topic
+                     vessel-metadata topic
+                               │
+┌──────────────────────────────▼────────────────────────────────────────┐
+│                       PROCESSING (Spark)                               │
+│                                                                        │
+│  bronze_positions.py ──► Pull Pub/Sub ──► Validate ──► GCS Parquet   │
+│  (micro-batch)            Python client    min rules    Bronze layer  │
+│                                                                        │
+│  silver_positions.py ──► Read Bronze ──► Rename + Enrich ──► GCS    │
+│  (hourly, closed hour)                    geo + deltas    Silver layer│
+│                                                                        │
+│  silver_metadata.py  ──► Pull Pub/Sub ──► Normalize ──► GCS Parquet  │
+│  (vessel-metadata topic)  ShipStaticData   type+dest    Silver layer  │
+└──────────────────────────────┬────────────────────────────────────────┘
+                               │
+                    BigQuery External Tables
+                    (read directly from GCS Parquet)
+                               │
+┌──────────────────────────────▼────────────────────────────────────────┐
+│                      GOLD + ANALYTICS (dbt)                            │
+│                                                                        │
+│  stg_vessel_positions  ──► joins positions + metadata on mmsi         │
+│  vessel_activity_summary ──► daily activity per vessel                 │
+│  port_traffic          ──► daily traffic per port                      │
+│  anomaly_candidates    ──► rule-based anomaly flags (→ ML Phase 4)    │
+└──────────────────────────────┬────────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼────────────────────────────────────────┐
+│                          ML + SERVING                                  │
+│                                                                        │
+│  MLflow ──► Activity Classifier (XGBoost)                             │
+│         ──► Anomaly Detector (Isolation Forest)                        │
+│         ──► ETA Predictor (LSTM)                                       │
+│                                                                        │
+│  FastAPI + Redis ──► Cloud Run ──► Dashboard WebSocket                │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Stack Tecnológico
+## Tech Stack
 
-| Capa | Tecnología | Por qué |
-|------|-----------|---------|
-| **Mensajería** | Google Cloud Pub/Sub | Managed, sin infraestructura que mantener, integración nativa con GCP |
-| **Procesamiento** | Apache Spark 3.5 (local Docker) | Standard de la industria para batch y streaming, esencial en portfolios DE |
-| **Lakehouse** | Delta Lake + GCS | Formato abierto, ACID transactions, time travel |
-| **Transformaciones** | dbt | SQL versionado, lineage automático, tests de datos |
-| **Orquestación** | Apache Airflow | Standard de facto para pipelines DE |
-| **ML Tracking** | MLflow | Experimentos reproducibles, model registry |
-| **Serving** | FastAPI + Redis + Cloud Run | API moderna, caché, serverless |
-| **Storage** | GCS (Bronze/Silver/Gold) + BigQuery | Separación lakehouse clásica |
-| **IaC** | Terraform | Infraestructura reproducible y versionada |
-| **Monitorización** | Prometheus + Grafana | Métricas operacionales del pipeline |
-| **Contenedores** | Docker Compose | Entorno local reproducible |
+| Layer | Technology | Why |
+|-------|-----------|-----|
+| **Messaging** | Google Cloud Pub/Sub | Managed, no infra to maintain, native GCP integration |
+| **Processing** | Apache Spark 3.5 (Docker) | Industry standard for batch/streaming, essential in DE portfolios |
+| **Lakehouse** | GCS Parquet + BigQuery External Tables | GCS as source of truth, BQ reads directly — no data duplication |
+| **Transformations** | dbt 1.8 | Versioned SQL, automatic lineage, data quality tests |
+| **Orchestration** | Apache Airflow | De facto standard for DE pipelines |
+| **ML Tracking** | MLflow | Reproducible experiments, model registry |
+| **Serving** | FastAPI + Redis + Cloud Run | Modern API, cache, serverless |
+| **IaC** | Terraform | Reproducible and versioned infrastructure |
+| **Monitoring** | Prometheus + Grafana | Pipeline operational metrics |
+| **Containers** | Docker Compose | Reproducible local environment |
 
 ---
 
-## Estructura del Proyecto
+## Project Structure
 
 ```
 marineflow/
 ├── ingestion/
-│   ├── ais_producer/           # Producer WebSocket → Pub/Sub
-│   │   ├── main.py             # Entrada, retry logic, graceful shutdown
-│   │   ├── producer.py         # PubSubPublisher con batching y DLQ
-│   │   ├── parser.py           # Parser AIS, modelos Pydantic
-│   │   ├── config.py           # Configuración desde variables de entorno
+│   ├── ais_producer/           # Live WebSocket producer → Pub/Sub
+│   │   ├── main.py             # Entry point, exponential retry, graceful shutdown
+│   │   ├── producer.py         # PubSubPublisher with batching and DLQ
+│   │   ├── parser.py           # Minimal AIS parser — zero business logic
+│   │   ├── config.py           # Env var configuration
 │   │   └── requirements.txt
-│   └── simulator/              # Generador sintético de flota
-│       ├── main.py             # 8 rutas reales, anomalías, interpolación GPS
+│   └── simulator/              # Synthetic fleet generator
+│       ├── main.py             # 8 real shipping routes, GPS noise, anomalies
 │       └── requirements.txt
 │
 ├── processing/
-│   ├── spark_streaming/
-│   │   ├── bronze_positions.py # Pub/Sub → GCS Parquet (Bronze)
-│   │   ├── silver_positions.py # Bronze → GCS + BigQuery (Silver)
-│   │   └── requirements.txt
-│   └── jars/
-│       ├── gcs-connector-hadoop3-latest.jar   # GCS filesystem para Spark
-│       └── spark-3.5-bigquery-0.36.1.jar      # BigQuery connector
+│   └── spark_streaming/
+│       ├── bronze_positions.py # Pub/Sub → GCS Bronze (raw clone)
+│       ├── silver_positions.py # Bronze → GCS Silver (enriched, hourly)
+│       ├── silver_metadata.py  # vessel-metadata topic → GCS Silver
+│       ├── diagnose_bronze.py  # diagnostic utility
+│       └── requirements.txt
+│
+├── transformation/
+│   └── dbt/
+│       ├── dbt_project.yml
+│       ├── profiles.yml
+│       ├── packages.yml
+│       ├── models/
+│       │   ├── staging/
+│       │   │   ├── sources.yml              # Silver external tables as sources
+│       │   │   └── stg_vessel_positions.sql # positions + metadata join
+│       │   └── gold/
+│       │       ├── schema.yml               # data quality tests
+│       │       ├── vessel_activity_summary.sql
+│       │       ├── port_traffic.sql
+│       │       └── anomaly_candidates.sql
+│       └── macros/
+│           └── safe_divide.sql
 │
 ├── infra/
 │   └── terraform/
-│       ├── main.tf             # Provider GCP con ADC
+│       ├── main.tf
 │       ├── variables.tf
 │       ├── outputs.tf
-│       ├── terraform.tfvars.example
 │       └── modules/
-│           ├── gcs/            # Buckets Bronze/Silver/Gold
-│           ├── pubsub/         # Topics y subscriptions
-│           ├── bigquery/       # Datasets y tablas
-│           └── iam/            # Service account y roles
+│           ├── gcs/        # Bronze/Silver/Gold buckets
+│           ├── pubsub/     # Topics and subscriptions
+│           ├── bigquery/   # Datasets + external tables
+│           └── iam/        # Service account and roles
 │
 ├── monitoring/
 │   └── prometheus/
 │       └── prometheus.yml
 │
-├── docker-compose.yml          # Stack local completo
-├── .env                        # Variables de entorno (gitignored)
+├── docker-compose.yml
+├── .env
 └── README.md
 ```
 
 ---
 
-## Fases del Pipeline
+## Pipeline Phases
 
-### Fase 1 — Ingesta AIS
+### Phase 1 — AIS Ingestion
 
-**Estado: ✅ Completada**
+**Status: ✅ Complete**
 
-#### Componentes
+**`ingestion/ais_producer/`** — Live producer
 
-**`ingestion/ais_producer/`** — Producer real
+Connects via WebSocket to `wss://stream.aisstream.io/v0/stream`, parses AIS messages and publishes to Pub/Sub.
 
-Conecta vía WebSocket a `wss://stream.aisstream.io/v0/stream`, parsea mensajes AIS y los publica en Pub/Sub.
+- `parser.py`: minimal ingestion layer — validates coordinates, normalizes ISO 8601 timestamps, preserves all raw field names unchanged. Zero business logic. Routes `PositionReport` → `vessel-positions` topic, `ShipStaticData` → `vessel-metadata` topic.
+- `producer.py`: `PubSubPublisher` with batching (up to 100 messages/batch), publish callbacks and Dead Letter Queue for failed messages.
+- `main.py`: exponential retry with `tenacity`, SIGTERM/SIGINT graceful shutdown.
 
-- `main.py`: punto de entrada con retry exponencial usando `tenacity`. Gestiona señales de sistema (SIGTERM/SIGINT) para shutdown graceful.
-- `producer.py`: `PubSubPublisher` con batching (hasta 100 mensajes por batch), callbacks de confirmación y Dead Letter Queue (DLQ) para mensajes fallidos.
-- `parser.py`: parsea dos tipos de mensajes AIS — `PositionReport` (posición GPS, velocidad, rumbo) y `ShipStaticData` (nombre, tipo, bandera, destino). Usa modelos Pydantic para validación.
-- `config.py`: toda la configuración viene de variables de entorno. No hay valores hardcodeados en código.
+**`ingestion/simulator/`** — Synthetic fallback
 
-**`ingestion/simulator/`** — Simulador sintético
+Generates a realistic synthetic fleet for development and testing without depending on the external service.
 
-Genera una flota sintética realista para desarrollo y testing sin depender del servicio externo.
-
-- 8 rutas de shipping reales (Trans-Atlántico, Asia-Europa Suez, Trans-Pacífico, etc.)
-- Interpolación lineal entre waypoints con ruido GPS simulado
-- 5% de barcos anómalos (velocidades imposibles, gaps de AIS) para entrenar el modelo de detección de anomalías
-- Configurable: `python main.py --vessels 20 --interval 3.0`
+- 8 real shipping routes (Trans-Atlantic, Asia-Europe Suez, Trans-Pacific, etc.)
+- Linear interpolation between waypoints with simulated GPS noise
+- 5% anomalous vessels (impossible speeds, AIS gaps) for anomaly detection training
 
 #### Pub/Sub Topics
 
-| Topic | Contenido | Subscription de Spark |
-|-------|-----------|----------------------|
-| `vessel-positions` | PositionReport (lat/lon/velocidad/rumbo) | `vessel-positions-spark-sub` |
-| `vessel-metadata` | ShipStaticData (nombre/tipo/bandera) | `vessel-metadata-spark-sub` |
-| `maritime-alerts` | Alertas del detector de anomalías | `maritime-alerts-spark-sub` |
-| `dead-letter-queue` | Mensajes fallidos para reprocessing | `dead-letter-queue-spark-sub` |
-
-#### Decisión: Simulador como modo principal de desarrollo
-
-aisstream.io es un servicio en BETA sin SLA garantizado. Durante el desarrollo encontramos que el endpoint WebSocket tiene problemas de handshake SSL en ciertas redes (renegociación TLS que Python no maneja correctamente). El simulador replica exactamente el mismo schema de datos y publica en los mismos topics de Pub/Sub — el resto del pipeline no distingue la fuente.
-
-Para producción o cuando aisstream.io esté estable: `python ingestion/ais_producer/main.py`
-
-Para desarrollo: `python ingestion/simulator/main.py --vessels 20 --interval 3.0`
+| Topic | Content | Spark Subscription |
+|-------|---------|-------------------|
+| `vessel-positions` | PositionReport (lat/lon/speed/heading) | `vessel-positions-spark-sub` |
+| `vessel-metadata` | ShipStaticData (name/type/flag/destination) | `vessel-metadata-spark-sub` |
+| `maritime-alerts` | Anomaly detector output | `maritime-alerts-spark-sub` |
+| `dead-letter-queue` | Failed messages for reprocessing | `dead-letter-queue-spark-sub` |
 
 ---
 
-### Fase 2 — Spark Bronze Layer
+### Phase 2 — Spark Bronze Layer
 
-**Estado: ✅ Completada**
+**Status: ✅ Complete**
 
-#### ¿Qué es la capa Bronze?
+Bronze is the **raw landing zone**. Data arrives exactly as from the source — minimal transformation, maximum fidelity. If something fails in upper layers, you can always reprocess from Bronze.
 
-En arquitectura Medallion (Bronze/Silver/Gold), Bronze es la **zona de aterrizaje raw**. Los datos llegan tal cual desde la fuente — mínima transformación, máxima fidelidad. Si algo falla en capas superiores, siempre puedes reprocessar desde Bronze.
+#### Bronze philosophy
 
-Bronze solo hace dos cosas:
-1. Filtrar registros obviamente inválidos (lat/lon fuera de rango, MMSI nulo)
-2. Añadir columnas de particionado (fecha, hora) para queries eficientes
+Bronze has four clearly separated responsibilities:
 
-#### Arquitectura del job Bronze
+| Function | What it does |
+|----------|-------------|
+| `build_dataframe()` | Aligns message dicts to the Spark schema — fills missing fields with None, drops extra fields |
+| `validate()` | Filters only physically impossible records (lat > 90, lon > 180, null MMSI) |
+| `add_partition_columns()` | Casts ISO 8601 strings to TimestampType, derives `partition_date` and `partition_hour` |
+| `add_lineage()` | Attaches `_batch_id`, `_source_file`, `_pipeline_version` to every record |
+
+**No business transformations.** Field names match the original aisstream.io JSON keys exactly. All enrichments (flag country, nav status translation, vessel type) happen in Silver.
+
+#### GCS partition layout
 
 ```
-Pub/Sub subscription
-      │
-      ▼
-Python pull (google-cloud-pubsub)
-      │  hasta 500 mensajes por batch
-      ▼
-Schema enforcement (StructType explícito)
-      │  evita errores de inferencia de tipos
-      ▼
-Spark validation
-      │  lat entre -90/90, lon entre -180/180
-      │  filtra sentinel values AIS (91.0, 181.0)
-      ▼
-Partition columns
-      │  partition_date, partition_hour
-      ▼
-GCS Parquet
-gs://marineflow-lake-{project}/bronze/vessel_positions/
-  partition_date=2026-03-11/
-    partition_hour=13/
-      part-00000.parquet
+bronze/vessel_positions/
+  partition_date=2026-03-13/
+    partition_hour=14/
+      part-00000.snappy.parquet   ← coalesce(1): one file per batch
+    partition_hour=15/
+      part-00000.snappy.parquet
 ```
 
-#### ¿Por qué micro-batch y no Spark Structured Streaming nativo?
+#### Delay design
 
-Intentamos usar `spark.readStream.format("pubsub")` pero no existe un conector oficial de Pub/Sub para Spark publicado en Maven. Google tiene el `pubsub-group-kafka-connector` pero requiere Kafka como intermediario — añadir Kafka solo como puente entre Pub/Sub y Spark es over-engineering injustificado.
-
-El patrón micro-batch (pull Python → createDataFrame → write) es el estándar en pipelines GCP + Spark cuando no se usa Dataproc o Dataflow. En producción con Dataproc existiría el conector nativo o se usaría Dataflow (Apache Beam) directamente.
-
-#### JARs necesarios
-
-Los JARs son librerías Java que extienden las capacidades de Spark:
-
-- **`gcs-connector-hadoop3-latest.jar`**: enseña a Spark a leer/escribir rutas `gs://`. Sin él, Spark no sabe qué es Google Cloud Storage.
-- **`spark-3.5-bigquery-0.36.1.jar`**: permite a Spark escribir directamente en tablas de BigQuery (usado en Silver).
-
-Se pasan al job con `--jars`:
-```bash
-spark-submit --jars jars/gcs-connector.jar,jars/bq-connector.jar bronze_positions.py
-```
-
-#### Docker y credenciales
-
-Spark corre dentro de un contenedor Docker (`apache/spark:3.5.0`). El contenedor está completamente aislado de Windows — no ve el venv local ni las credenciales ADC del sistema.
-
-Soluciones implementadas:
-- **Dependencias Python**: instaladas manualmente con `pip install` dentro del contenedor (`docker exec -u root`). En la Fase 5 se creará un `Dockerfile` que las incluya permanentemente.
-- **Credenciales ADC**: montadas como volumen read-only desde `C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json` → `/tmp/adc.json` dentro del contenedor. La ruta `/tmp/` es accesible por todos los usuarios incluyendo el usuario `spark` con el que corren los procesos internos.
-
-#### Schema Bronze
-
-```python
-StructType([
-    StructField("mmsi",                StringType()),   # ID único del barco
-    StructField("vessel_name",         StringType()),
-    StructField("vessel_type",         StringType()),   # código AIS numérico
-    StructField("latitude",            DoubleType()),
-    StructField("longitude",           DoubleType()),
-    StructField("speed_over_ground",   DoubleType()),   # nudos
-    StructField("course_over_ground",  DoubleType()),   # grados 0-360
-    StructField("heading",             IntegerType()),  # grados 0-359
-    StructField("navigational_status", StringType()),   # "underway", "at anchor", etc.
-    StructField("destination",         StringType()),   # texto libre del capitán
-    StructField("flag_country",        StringType()),   # derivado del MMSI MID
-    StructField("event_timestamp",     StringType()),   # timestamp del mensaje AIS
-    StructField("ingestion_timestamp", StringType()),   # timestamp de llegada a Pub/Sub
-    StructField("source",              StringType()),   # "aisstream_live" o "simulator"
-    StructField("pipeline_ingest_time",StringType()),   # timestamp del pull de Pub/Sub
-    StructField("pubsub_message_id",   StringType()),   # ID único del mensaje Pub/Sub
-])
-```
-
-El schema se define explícitamente (no inferido) porque algunos campos pueden ser `None` en todos los mensajes de un batch — Spark no puede inferir el tipo de una columna que solo contiene nulos.
+Bronze writes directly to each hour partition using `mode("overwrite")`. Silver **excludes the current hour** while Bronze is actively writing to it, avoiding `FileNotFoundError` race conditions. This is intentional — Silver processes fully closed partitions (max delay: 1 hour). Airflow (Phase 3) triggers Silver once per hour over the previous hour's partition.
 
 ---
 
-### Fase 3 — Silver Layer
+### Phase 3 — Silver, Gold & dbt
 
-**Estado: ✅ Completada (Silver) | ⏳ Pendiente (Gold + dbt)**
+**Status: ✅ Complete**
 
-#### ¿Qué es la capa Silver?
+#### Silver Positions (`silver_positions.py`)
 
-Silver es la capa de datos **limpios y enriquecidos**. A diferencia de Bronze (inmutable y raw), Silver aplica lógica de negocio, normaliza valores inconsistentes y añade contexto geoespacial. Es la capa que consumen los modelos ML y las queries analíticas.
+Reads Bronze Parquet from GCS and applies all business transformations in a fixed sequence:
 
-#### Transformaciones aplicadas
+| Step | Function | What it does |
+|------|----------|-------------|
+| 1 | `rename_bronze_fields()` | Renames raw Bronze keys to semantic Silver names (`MMSI` → `mmsi`, `Sog` → `speed_over_ground`, etc.) |
+| 2 | `deduplicate()` | Removes duplicate `(mmsi, event_timestamp)` — keeps most recently ingested |
+| 3 | `enrich_geospatial()` | Adds `ocean_region`, `nearest_port`, `is_in_port_zone`, `distance_to_port_km` |
+| 4 | `calculate_movement_deltas()` | Computes `speed_change_rate` and `heading_change_degrees` vs previous message per vessel |
 
-**1. Deduplicación**
-Elimina registros duplicados por `(mmsi, event_timestamp)`. Mantiene el más reciente por `ingestion_timestamp`. Los duplicados ocurren cuando el mismo mensaje AIS es recibido por múltiples estaciones terrestres simultáneamente.
+**Fields intentionally excluded** from `vessel_positions_clean`: `vessel_type_normalized` and `destination_clean` — these come from `ShipStaticData`, not `PositionReport`. They live in `vessel_metadata` and are joined in the dbt staging model.
 
-**2. Normalización de vessel_type**
-Los códigos AIS son enteros (e.g. `70-79` = cargo, `80-89` = tanker). Se convierten a categorías legibles:
+#### Silver Metadata (`silver_metadata.py`)
 
-| Código AIS | Categoría |
-|-----------|-----------|
-| 70-79 | cargo |
-| 80-89 | tanker |
-| 60-69 | passenger |
-| 30-35 | fishing |
-| 52-53 | tug |
-| 50-59 | special_craft |
-| resto | other |
+Reads `vessel-metadata` Pub/Sub topic (ShipStaticData messages) and writes to `silver/vessel_metadata/` in GCS. Applies:
+- `vessel_type_normalized`: raw AIS integer → semantic category (`cargo`, `tanker`, `passenger`, etc.)
+- `destination_clean`: strips junk AIS text, normalizes to uppercase
+- `flag_country`: derived from MMSI MID prefix
 
-**3. Enriquecimiento geoespacial**
-Añade columnas derivadas de lat/lon usando bounding boxes aproximados:
-- `ocean_region`: región oceánica (mediterranean, atlantic_west, pacific, indian_ocean, etc.)
-- `nearest_port` + `is_in_port_zone`: si el barco está dentro del radio de 15 puertos principales mundiales (Rotterdam, Shanghai, Singapore, Los Angeles, etc.)
-- `eez_country`: país de la Zona Económica Exclusiva más próxima
+#### External Tables vs Native Tables
 
-**4. Deltas de movimiento**
-Usando `Window.partitionBy("mmsi").orderBy("event_timestamp")`:
-- `speed_change_rate`: cambio de velocidad entre mensajes consecutivos del mismo barco — feature para anomaly detection
-- `heading_change_degrees`: cambio de rumbo entre mensajes consecutivos — feature para anomaly detection
+Bronze and Silver are exposed to BigQuery as **external tables** — BigQuery reads directly from GCS Parquet without copying data. This means:
 
-**5. Normalización de destino**
-El campo `destination` en AIS es texto libre escrito por el capitán — puede ser "ROTTERDAM", "RTM", "rotterdam", "RDAM". Se normaliza a mayúsculas con trim de whitespace.
+- **GCS is the single source of truth** — truncating a BQ table has no effect on the data
+- **Always in sync** — any new file written by Spark is immediately queryable in BQ
+- **No write step** — Spark jobs only write to GCS; the BQ step has been eliminated from all three jobs
+- **Recoverability** — if a BQ table is dropped, `terraform apply` recreates it pointing at the same GCS data
 
-#### Arquitectura del job Silver
+Gold tables (managed by dbt) remain **native BQ tables** because dbt needs DML (`INSERT OVERWRITE`) to materialize them.
 
 ```
-GCS Bronze Parquet
-      │  spark.read.parquet(BRONZE_INPUT_DIR)
-      ▼
-Deduplicate (Window)
-      │  keep latest per (mmsi, event_timestamp)
-      ▼
-Normalize vessel_type
-      │  AIS codes → cargo/tanker/passenger/fishing/other
-      ▼
-Geospatial enrichment
-      │  ocean_region, nearest_port, is_in_port_zone
-      ▼
-Movement deltas (Window)
-      │  speed_change_rate, heading_change_degrees → cast DoubleType
-      ▼
-Normalize destination
-      │  UPPER + TRIM
-      ▼
-     ┌──────────────────┐
-     │                  │
-     ▼                  ▼
-GCS Silver Parquet   BigQuery
-silver/vessel_       marineflow_silver.vessel_positions_clean
-positions/
+GCS bronze/vessel_positions/  ←→  BQ External: marineflow_bronze.vessel_positions_raw
+GCS silver/vessel_positions/  ←→  BQ External: marineflow_silver.vessel_positions_clean
+GCS silver/vessel_metadata/   ←→  BQ External: marineflow_silver.vessel_metadata
+                                          ↓ dbt reads
+                                   BQ Native: marineflow_gold.*
 ```
 
-#### JARs necesarios para Silver
+#### dbt Gold Models
 
-Silver necesita dos JARs (Bronze solo necesitaba el de GCS):
+Three Gold models materialized as partitioned, clustered BigQuery tables:
 
-- **`gcs-connector-hadoop3-latest.jar`**: lectura de Bronze y escritura Silver en GCS
-- **`spark-bigquery.jar`**: escritura en BigQuery
+<details>
+<summary><strong>vessel_activity_summary</strong> — daily activity per vessel</summary>
 
-**Importante**: el JAR de BigQuery debe descargarse desde Maven con el nombre completo. El archivo de GitHub releases estaba vacío (0 bytes).
+Grain: `(mmsi, date_day)`. Answers: how far did vessel X travel today? How long was it in port vs at sea? Did it show anomalous behaviour?
 
-Descarga correcta:
-```powershell
-curl -L -o processing/jars/spark-bigquery.jar "https://repo1.maven.org/maven2/com/google/cloud/spark/spark-bigquery-with-dependencies_2.12/0.36.1/spark-bigquery-with-dependencies_2.12-0.36.1.jar"
-```
+Key metrics: `estimated_distance_km`, `avg_speed_knots`, `active_minutes`, `positions_in_port`, `ais_gaps_30min`, `ais_gaps_2hr`, `sudden_speed_changes`, `sharp_turns`.
 
-#### Comando spark-submit Silver
+Partitioned by `date_day`, clustered by `mmsi`, `flag_country`.
+</details>
 
-```powershell
-docker exec `
-  -e GCP_PROJECT_ID=marineflow-489815 `
-  -e GCS_BUCKET=marineflow-lake-marineflow-489815 `
-  -e BQ_DATASET_SILVER=marineflow_silver `
-  -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json `
-  -e GOOGLE_CLOUD_PROJECT=marineflow-489815 `
-  -e SILVER_BATCH_INTERVAL=60 `
-  -e SILVER_MAX_BATCHES=1 `
-  marineflow-spark-master /opt/spark/bin/spark-submit `
-  --master local[*] `
-  --driver-memory 3g `
-  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar,/opt/spark/processing/jars/spark-bigquery.jar `
-  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar:/opt/spark/processing/jars/spark-bigquery.jar `
-  /opt/spark/processing/spark_streaming/silver_positions.py
-```
+<details>
+<summary><strong>port_traffic</strong> — daily traffic per port</summary>
 
-**Nota sobre `--driver-class-path`**: Silver requiere este flag adicional porque el conector de BigQuery necesita registrar su DataSource en la JVM del driver al arrancar. Sin él Spark lanza `DATA_SOURCE_NOT_FOUND: bigquery`.
+Grain: `(nearest_port, date_day)`. Answers: how many vessels passed through Rotterdam today? What vessel types dominate Singapore?
 
-#### Lecciones aprendidas en Silver
+Key metrics: `unique_vessels`, `vessel_entries`, `cargo_vessels`, `tanker_vessels`, `distinct_flag_countries`, `sudden_manoeuvres`.
 
-**Schema mismatch en BigQuery**: `heading_change_degrees` se calculaba como `IntegerType` (resta de dos enteros) pero BigQuery tenía la columna como `FLOAT`. Fix: castear explícitamente a `DoubleType()` en `calculate_movement_deltas`.
+Partitioned by `date_day`, clustered by `nearest_port`, `eez_country`.
+</details>
 
-**Window functions y rendimiento**: deduplicación y deltas usan window functions que requieren shuffle. Con ~9.000 registros en `local[*]` el job tarda ~6 minutos. Normal para modo local — en Dataproc con múltiples workers sería segundos.
+<details>
+<summary><strong>anomaly_candidates</strong> — rule-based anomaly flags</summary>
+
+Grain: `(mmsi, date_day, alert_type)`. Primary input for the Isolation Forest anomaly detector in Phase 4.
+
+Four alert types: `ais_gap` (>2hr silence), `speed_anomaly` (sudden extreme speed change), `dark_vessel` (moving + AIS gaps), `erratic_course` (repeated sharp turns). Each with `low/medium/high` severity.
+
+Alert ID is a deterministic surrogate key via `dbt_utils.generate_surrogate_key`.
+</details>
+
+#### dbt Staging
+
+`stg_vessel_positions.sql` joins `vessel_positions_clean` with `vessel_metadata` on `mmsi` (taking the most recent metadata per vessel). This is the only place the join logic lives — all Gold models inherit `vessel_type_normalized` and `destination_clean` from here.
+
+#### Data Quality Tests
+
+dbt tests run automatically after every `dbt run`:
+
+| Model | Tests |
+|-------|-------|
+| `vessel_activity_summary` | `not_null` on key fields, `unique_combination_of_columns(mmsi, date_day)` |
+| `port_traffic` | `not_null` on key fields, `unique_combination_of_columns(nearest_port, date_day)` |
+| `anomaly_candidates` | `unique` + `not_null` on `alert_id`, `accepted_values` on `alert_type` and `severity` |
+
+#### Small files mitigation
+
+Each Spark batch generates Parquet files. Without mitigation, hundreds of small files accumulate per partition. Implemented `coalesce()` on all three jobs:
+
+- Bronze: `coalesce(1)` — one file per batch (batches are small, ~500 messages)
+- Silver positions: `coalesce(2)` — two files per daily partition (higher volume, multiple batches)
+- Silver metadata: `coalesce(1)` — metadata messages are sparse
+
+In production, a periodic compaction job (or Delta Lake) would handle this automatically.
 
 ---
 
-### Fase 4 — Gold, dbt y Airflow
+### Phase 4 — ML Models
 
-**Estado: ⏳ Pendiente**
+**Status: ⏳ Pending**
 
-Planificado:
-- dbt models para capa Gold: agregaciones por puerto, por bandera, por ruta
-- Airflow DAGs para orquestación diaria Silver → Gold
+Three models planned, all tracked with MLflow:
 
----
+**1. Activity Classifier (XGBoost)** — classifies vessel activity state: in transit, fishing, waiting, port manoeuvre. Features: speed, heading, vessel type, geographic zone.
 
-### Fase 4 — Modelos ML
+**2. Anomaly Detector (Isolation Forest)** — detects anomalous behaviour using `anomaly_candidates` Gold table as input signal. Publishes alerts to `maritime-alerts` Pub/Sub topic.
 
-**Estado: ⏳ Pendiente**
-
-Tres modelos planificados:
-
-**1. Activity Classifier (XGBoost)**
-Clasifica el estado de actividad del barco: en tránsito, pescando, esperando, maniobra portuaria. Features: velocidad, rumbo, tipo de barco, zona geográfica.
-
-**2. Anomaly Detector (Isolation Forest)**
-Detecta comportamientos anómalos: velocidades imposibles, gaps de AIS (barcos que "desaparecen"), desviaciones de ruta, barcos oscuros. Publica alertas al topic `maritime-alerts`.
-
-**3. ETA Predictor (LSTM)**
-Predice tiempo de llegada a puerto usando velocidad histórica, condiciones meteorológicas y rutas habituales. Reentrenamiento semanal via Airflow.
-
-Todos los modelos se rastrean con MLflow (experimentos, métricas, artefactos).
+**3. ETA Predictor (LSTM)** — predicts time of arrival to port using historical speed, typical routes. Weekly retraining via Airflow.
 
 ---
 
-### Fase 5 — API y Dashboard
+### Phase 5 — API & Dashboard
 
-**Estado: ⏳ Pendiente**
+**Status: ⏳ Pending**
 
-- FastAPI con WebSockets para streaming de posiciones en tiempo real
-- Redis como caché de últimas posiciones conocidas
-- Dashboard con mapa mundial de tráfico naval
-- Deploy en Cloud Run via Terraform
-- Prometheus + Grafana para métricas operacionales
+- FastAPI with WebSockets for real-time position streaming
+- Redis as cache for last known positions
+- World map dashboard of naval traffic
+- Cloud Run deploy via Terraform
+- Prometheus + Grafana for operational metrics
 
 ---
 
-## Infraestructura GCP (Terraform)
+## GCP Infrastructure (Terraform)
 
-Toda la infraestructura está definida como código en `infra/terraform/`. Se puede reproducir completamente con `terraform apply`.
+All infrastructure defined as code in `infra/terraform/`. Fully reproducible with `terraform apply`.
 
-**Proyecto GCP**: `marineflow-489815`
-**Región**: `us-central1`
+**GCP Project**: `marineflow-489815` | **Region**: `us-central1`
 
-### Recursos creados (33 en total)
+### Resources
 
-**GCS Buckets** (`modules/gcs/`):
-- `marineflow-tfstate`: estado remoto de Terraform
-- `marineflow-lake-{project}`: data lake con estructura Bronze/Silver/Gold/checkpoints/models/schemas
+**GCS** (`modules/gcs/`):
+- `marineflow-tfstate` — Terraform remote state
+- `marineflow-lake-{project}` — data lake: `bronze/`, `silver/`, `gold/`, `checkpoints/`, `models/`, `schemas/`
 
 **Pub/Sub** (`modules/pubsub/`):
-- 5 topics con sus subscriptions correspondientes
-- Dead Letter Queue configurada para mensajes fallidos
+- 5 topics with subscriptions: `vessel-positions`, `vessel-metadata`, `maritime-alerts`, `port-events`, `dead-letter-queue`
 
 **BigQuery** (`modules/bigquery/`):
-- `marineflow_bronze`: datos raw, tabla `vessel_positions_raw`
-- `marineflow_silver`: datos limpios, tabla `vessel_positions_clean`
-- `marineflow_gold`: tablas analíticas, tabla `maritime_alerts`
-- `marineflow_features`: Feature Store para ML
+- `marineflow_bronze` — external table `vessel_positions_raw` → GCS Bronze
+- `marineflow_silver` — external tables `vessel_positions_clean`, `vessel_metadata` → GCS Silver
+- `marineflow_gold` — native tables managed by dbt: `vessel_activity_summary`, `port_traffic`, `anomaly_candidates`
+- `marineflow_features` — ML Feature Store (Phase 4)
 
 **IAM** (`modules/iam/`):
-- Service account `marineflow-sa` con roles mínimos necesarios
+- Service account `marineflow-sa` with minimum required roles
 
-### Autenticación: ADC en lugar de Service Account Keys
+### Authentication: ADC instead of Service Account Keys
 
-La organización GCP tiene la org policy `constraints/iam.disableServiceAccountKeyCreation` que impide crear JSON keys de service accounts. En lugar de keys usamos **Application Default Credentials (ADC)**.
+The GCP org has `constraints/iam.disableServiceAccountKeyCreation` policy enabled. Instead of keys we use **Application Default Credentials (ADC)** — the Google-recommended approach for local development.
 
-ADC es el método recomendado por Google para desarrollo local. Las credenciales se obtienen del usuario autenticado con `gcloud auth application-default login` y se renuevan automáticamente.
-
-Para configurar:
 ```bash
 gcloud auth application-default login
 gcloud auth application-default set-quota-project marineflow-489815
@@ -483,19 +408,20 @@ gcloud auth application-default set-quota-project marineflow-489815
 
 ---
 
-## Configuración Local
+## Local Setup
 
-### Prerequisitos
+### Prerequisites
 
-| Herramienta | Versión | Para qué |
-|-------------|---------|---------|
-| Python | 3.11 | Producer, simulador, jobs Spark |
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Python | 3.11 | Producer, simulator, Spark jobs |
 | Java | 17+ | Spark (JVM) |
-| Docker Desktop | 29+ | Spark, MLflow, Grafana |
-| gcloud CLI | 372+ | Auth y operaciones GCP |
-| Terraform | 1.5+ | Infraestructura |
+| Docker Desktop | 29+ | Spark container |
+| gcloud CLI | 372+ | Auth and GCP operations |
+| Terraform | 1.5+ | Infrastructure |
+| dbt-bigquery | 1.8.2 | Gold transformations |
 
-### Variables de entorno (.env)
+### Environment variables (.env)
 
 ```bash
 # GCP
@@ -503,163 +429,164 @@ GCP_PROJECT_ID=marineflow-489815
 GCS_BUCKET=marineflow-lake-marineflow-489815
 GOOGLE_CLOUD_PROJECT=marineflow-489815
 
+# AIS (live producer only)
+AIS_API_KEY=<your aisstream.io key>
+
 # Pub/Sub
 PUBSUB_TOPIC_POSITIONS=vessel-positions
 PUBSUB_TOPIC_METADATA=vessel-metadata
 PUBSUB_TOPIC_DLQ=dead-letter-queue
 PUBSUB_SUB_POSITIONS=vessel-positions-spark-sub
-
-# AIS (solo para producer real)
-AIS_API_KEY=<tu key de aisstream.io>
-MESSAGE_SOURCE=aisstream_live
+PUBSUB_SUB_METADATA=vessel-metadata-spark-sub
 
 # Spark
 SPARK_MASTER=local[*]
 SPARK_DRIVER_MEMORY=3g
-SPARK_EXECUTOR_MEMORY=2g
 
-# Bronze job
+# Bronze
 BRONZE_BATCH_SIZE=500
 BRONZE_BATCH_INTERVAL=30
 BRONZE_MAX_BATCHES=0
+PIPELINE_VERSION=0.1.0
+
+# Silver
+SILVER_BATCH_INTERVAL=60
+SILVER_MAX_BATCHES=0
+METADATA_BATCH_INTERVAL=60
+METADATA_MAX_BATCHES=0
 
 # BigQuery
+BQ_DATASET_BRONZE=marineflow_bronze
 BQ_DATASET_SILVER=marineflow_silver
-
-# MLflow / Postgres
-POSTGRES_USER=marineflow
-POSTGRES_PASSWORD=marineflow_dev_password
-POSTGRES_DB=marineflow
 ```
 
-### Puertos locales
+### Local ports
 
-| Servicio | Puerto | UI |
-|---------|--------|-----|
+| Service | Port | UI |
+|---------|------|----|
 | Spark Master UI | 4040 | http://localhost:4040 |
 | Spark Worker UI | 4041 | http://localhost:4041 |
 | MLflow | 5001 | http://localhost:5001 |
 | Grafana | 3000 | http://localhost:3000 |
 | Prometheus | 9090 | http://localhost:9090 |
-| PostgreSQL | 5432 | — |
-| Redis | 6379 | — |
 
-**Nota sobre puertos en Windows con Hyper-V**: Windows/Hyper-V reserva rangos de puertos (típicamente 8064-8763). Usar puertos por debajo de 8064 o entre 8764-49999. Los puertos 4040/4041 son los puertos nativos de Spark UI y funcionan correctamente.
+> **Windows / Hyper-V note**: Hyper-V reserves port ranges (typically 8064–8763). Use ports below 8064 or between 8764–49999. Ports 4040/4041 are Spark's native UI ports and work correctly.
 
 ---
 
-## Decisiones de Diseño
+## Design Decisions
 
-### ¿Por qué GCP y no AWS o Azure?
+### Bronze philosophy: zero transformations
 
-Continuidad con el proyecto anterior (NYC Mobility). Tener dos proyectos en el mismo cloud demuestra profundidad en un ecosistema específico en lugar de conocimiento superficial de varios.
+Bronze is the immutable raw clone of the source. If you over-filter in Bronze and later discover the filter was wrong, you've permanently lost data. The separation is strict:
 
-### ¿Por qué Spark local en Docker y no Dataproc?
+| Layer | Responsibility |
+|-------|---------------|
+| **Parser** | Validate coordinates, normalize ISO 8601 timestamp, route message to correct topic |
+| **Bronze** | Schema enforcement, impossible coordinate filter, partition columns, lineage fields |
+| **Silver** | All business logic: field renaming, nav status translation, flag country derivation, geospatial enrichment, movement deltas |
+| **Gold (dbt)** | Aggregations, metrics, anomaly flags |
 
-Dataproc (Spark managed de GCP) cuesta dinero con el cluster corriendo. Para desarrollo local Docker es gratuito, reproducible y suficiente para demostrar los conceptos. En producción el código es idéntico — solo cambia el `--master`.
+### External tables for Bronze and Silver
 
-### ¿Por qué micro-batch y no Spark Structured Streaming nativo para Pub/Sub?
+GCS is the single source of truth. BigQuery external tables read Parquet directly from GCS — no data copy, always in sync. If a BQ table is dropped, `terraform apply` recreates it pointing at the same GCS data. The BQ write step has been eliminated from all Spark jobs, simplifying the pipeline and removing the most error-prone step (indirect write via GCS temp bucket).
 
-No existe un conector oficial de Pub/Sub para Spark en Maven. Las alternativas son:
-1. Añadir Kafka como intermediario (over-engineering: Pub/Sub → Kafka → Spark)
-2. Usar Dataflow (Apache Beam) en lugar de Spark
-3. Micro-batch con Python client (nuestra elección)
+### 1-hour delay between Bronze and Silver
 
-El patrón micro-batch replica la misma semántica que Structured Streaming para nuestro caso de uso y es el enfoque estándar en pipelines GCP + Spark sin Dataproc/Dataflow.
+Bronze writes directly to each hour partition using `mode("overwrite")`. Reading a partition while it's being overwritten causes `SparkFileNotFoundException`. Silver avoids this by excluding the current hour — it only reads fully closed partitions. Maximum delay: 1 hour. Airflow (Phase 3) will trigger Silver once per hour on the previous hour's closed partition. In a production scenario requiring true real-time, this would be addressed with Delta Lake ACID transactions.
 
-### ¿Por qué schema explícito en Bronze y no inferencia?
+### Micro-batch instead of Spark Structured Streaming
 
-Spark infiere el schema muestreando los datos. Si un campo es `None` en todos los registros del batch, la inferencia falla con `CANNOT_DETERMINE_TYPE`. El schema explícito elimina esta fragilidad y además documenta el contrato de datos del sistema.
+No official Pub/Sub connector exists for Spark on Maven. Alternatives evaluated:
+1. Add Kafka as intermediary (Pub/Sub → Kafka → Spark) — over-engineering
+2. Use Dataflow (Apache Beam) instead of Spark — changes the entire processing stack
+3. **Micro-batch with Python client** (chosen) — replicates the same semantics as Structured Streaming
 
-### ¿Por qué Bronze solo valida lat/lon y no más campos?
+### Schema defined explicitly, not inferred
 
-Bronze es la fuente de verdad histórica. Si filtras demasiado en Bronze y luego descubres que el filtro era incorrecto, has perdido datos para siempre. La validación agresiva va en Silver (reversible) no en Bronze (inmutable).
+Spark infers schema by sampling data. If a field is `None` in all records of a batch, inference fails with `CANNOT_DETERMINE_TYPE`. Explicit schema eliminates this fragility and also documents the system's data contract.
 
-### ¿Por qué ADC y no Service Account Keys?
+### ADC instead of Service Account Keys
 
-Org policy lo impide, pero además ADC es la práctica recomendada por Google para desarrollo local. Las keys JSON son un riesgo de seguridad si se filtran accidentalmente en git. ADC rota automáticamente y está ligado al usuario autenticado.
+Org policy `constraints/iam.disableServiceAccountKeyCreation` prevents JSON key creation. ADC is Google's recommended approach for local development — credentials are tied to the authenticated user and rotate automatically.
 
 ---
 
-## Limitaciones Conocidas
+## Known Limitations
 
 ### aisstream.io BETA
 
-El servicio de streaming AIS en tiempo real (`aisstream.io`) está en BETA sin SLA garantizado. Durante el desarrollo se encontraron problemas intermitentes de conectividad WebSocket relacionados con renegociación TLS en el servidor — el servicio estuvo caído temporalmente y se recuperó solo.
+The live AIS streaming service is in BETA without guaranteed SLA. Intermittent WebSocket connectivity issues were encountered during development. **The live producer is verified working** — data with `"source": "aisstream_live"` confirmed arriving at Pub/Sub. The simulator is available as offline fallback.
 
-**El producer real está verificado y funcionando** — datos con `"source": "aisstream_live"` confirmados llegando a Pub/Sub. El simulador sigue disponible como fallback para desarrollo offline o cuando el servicio esté inestable.
+### Python dependencies not persisted in Docker
 
-**Producer real**: `python ingestion/ais_producer/main.py`
-**Simulador**: `python ingestion/simulator/main.py --vessels 20 --interval 3.0`
+Python dependencies installed in the Spark container via `docker exec pip install` are lost when the container is recreated. This will be resolved in Phase 5 with a custom `Dockerfile`.
 
-### Dependencias Python no persistentes en Docker
-
-Las dependencias Python instaladas en el contenedor Spark con `pip install` se pierden al recrear el contenedor. Esto se resolverá en la Fase 5 con un `Dockerfile` propio que las incluya en la imagen.
-
-**Workaround actual**:
+**Current workaround**:
 ```powershell
 docker exec -u root marineflow-spark-master pip install `
   pyspark==3.5.0 google-cloud-pubsub==2.21.1 `
   google-cloud-storage==2.16.0 python-dotenv==1.0.1 structlog==24.1.0
 ```
 
-### Spark en modo local
+### Spark in local mode
 
-Spark corre en modo `local[*]` — un solo proceso usando todos los cores disponibles. No hay distribución real entre workers. Para producción se usaría `spark://spark-master:7077` con múltiples workers o Dataproc.
+Spark runs in `local[*]` mode — a single process using all available cores. No real distribution between workers. For production: `spark://spark-master:7077` with multiple workers, or Dataproc.
+
+### Small files
+
+Each Spark batch generates one Parquet file per partition (`coalesce(1)`). Over time, many small files accumulate within a partition. Mitigated with `coalesce()` but not eliminated. A periodic compaction job (or Delta Lake) would handle this in production.
 
 ---
 
-## Cómo Ejecutar
+## How to Run
 
-### 1. Configuración inicial
+### 1. Initial setup
 
 ```bash
-# Clone repo
 git clone <repo-url>
 cd marineflow
-
-# Create venv and install dependencies
 python -m venv venv
-source venv/bin/activate  # or .\venv\Scripts\Activate.ps1 on Windows
+source venv/bin/activate      # or .\venv\Scripts\Activate.ps1 on Windows
+cp .env.example .env           # fill in your values
 
-# Copy and fill env file
-cp .env.example .env
-# Edit .env with your values
-
-# Authenticate with GCP
 gcloud config configurations activate marineflow
 gcloud auth application-default login
 gcloud auth application-default set-quota-project marineflow-489815
 ```
 
-### 2. Infraestructura GCP
+### 2. GCP Infrastructure
 
 ```bash
 cd infra/terraform
 terraform init
-terraform plan -out marineflow.tfplan
-terraform apply marineflow.tfplan
+terraform plan
+terraform apply
 ```
 
-### 3. Levantar stack Docker
+### 3. Start Docker stack
 
 ```powershell
 docker compose up spark-master spark-worker -d
 
-# Install Python deps in container (until Dockerfile is ready)
 docker exec -u root marineflow-spark-master pip install `
   pyspark==3.5.0 google-cloud-pubsub==2.21.1 `
   google-cloud-storage==2.16.0 python-dotenv==1.0.1 structlog==24.1.0
 ```
 
-### 4. Arrancar simulador
+### 4. Start producer or simulator
 
 ```powershell
+# Live producer
+cd ingestion/ais_producer
+python main.py
+
+# Or synthetic simulator
 cd ingestion/simulator
 python main.py --vessels 20 --interval 3.0
 ```
 
-### 5. Lanzar Bronze job
+### 5. Run Bronze job
 
 ```powershell
 docker exec `
@@ -668,22 +595,94 @@ docker exec `
   -e PUBSUB_SUB_POSITIONS=vessel-positions-spark-sub `
   -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json `
   -e GOOGLE_CLOUD_PROJECT=marineflow-489815 `
-  -e BRONZE_BATCH_INTERVAL=30 `
+  -e BQ_DATASET_BRONZE=marineflow_bronze `
+  -e PIPELINE_VERSION=0.1.0 `
   -e BRONZE_BATCH_SIZE=500 `
+  -e BRONZE_BATCH_INTERVAL=30 `
   marineflow-spark-master /opt/spark/bin/spark-submit `
-  --master local[*] `
-  --driver-memory 3g `
-  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar `
+  --master local[*] --driver-memory 3g `
+  --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem `
+  --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS `
+  --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT `
+  --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 `
+  --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true `
+  --conf parentProject=marineflow-489815 `
+  --conf temporaryGcsBucket=marineflow-lake-marineflow-489815 `
+  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar,/opt/spark/processing/jars/spark-bigquery-with-dependencies_2.12-0.40.0.jar `
+  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar:/opt/spark/processing/jars/spark-bigquery-with-dependencies_2.12-0.40.0.jar `
   /opt/spark/processing/spark_streaming/bronze_positions.py
 ```
 
-### 6. Verificar datos en GCS
+### 6. Run Silver jobs (after Bronze has closed the previous hour)
+
+```powershell
+# Silver positions
+docker exec `
+  -e GCP_PROJECT_ID=marineflow-489815 `
+  -e GCS_BUCKET=marineflow-lake-marineflow-489815 `
+  -e BQ_DATASET_SILVER=marineflow_silver `
+  -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json `
+  -e GOOGLE_CLOUD_PROJECT=marineflow-489815 `
+  marineflow-spark-master /opt/spark/bin/spark-submit `
+  --master local[*] --driver-memory 3g `
+  --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem `
+  --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS `
+  --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT `
+  --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 `
+  --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true `
+  --conf parentProject=marineflow-489815 `
+  --conf temporaryGcsBucket=marineflow-lake-marineflow-489815 `
+  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar,/opt/spark/processing/jars/spark-bigquery-with-dependencies_2.12-0.40.0.jar `
+  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar:/opt/spark/processing/jars/spark-bigquery-with-dependencies_2.12-0.40.0.jar `
+  /opt/spark/processing/spark_streaming/silver_positions.py
+
+# Silver metadata
+docker exec `
+  -e GCP_PROJECT_ID=marineflow-489815 `
+  -e GCS_BUCKET=marineflow-lake-marineflow-489815 `
+  -e BQ_DATASET_SILVER=marineflow_silver `
+  -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json `
+  -e GOOGLE_CLOUD_PROJECT=marineflow-489815 `
+  -e PUBSUB_SUB_METADATA=vessel-metadata-spark-sub `
+  marineflow-spark-master /opt/spark/bin/spark-submit `
+  --master local[*] --driver-memory 3g `
+  --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem `
+  --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS `
+  --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT `
+  --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 `
+  --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true `
+  --conf parentProject=marineflow-489815 `
+  --conf temporaryGcsBucket=marineflow-lake-marineflow-489815 `
+  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar,/opt/spark/processing/jars/spark-bigquery-with-dependencies_2.12-0.40.0.jar `
+  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar:/opt/spark/processing/jars/spark-bigquery-with-dependencies_2.12-0.40.0.jar `
+  /opt/spark/processing/spark_streaming/silver_metadata.py
+```
+
+### 7. Run dbt Gold models
+
+```powershell
+cd transformation/dbt
+dbt deps
+dbt run
+dbt test
+```
+
+### 8. Verify data
 
 ```bash
+# GCS
 gcloud storage ls gs://marineflow-lake-marineflow-489815/bronze/vessel_positions/
+gcloud storage ls gs://marineflow-lake-marineflow-489815/silver/vessel_positions/
+gcloud storage ls gs://marineflow-lake-marineflow-489815/silver/vessel_metadata/
+
+# BigQuery
+bq query --use_legacy_sql=false \
+  "SELECT COUNT(*) FROM marineflow-489815.marineflow_bronze.vessel_positions_raw"
+bq query --use_legacy_sql=false \
+  "SELECT COUNT(*) FROM marineflow-489815.marineflow_gold.vessel_activity_summary"
 ```
 
 ---
 
-*MarineFlow — Portfolio project by [tu nombre]*
+*MarineFlow — Portfolio project*
 *Stack: Python · Apache Spark · GCP Pub/Sub · GCS · BigQuery · dbt · Airflow · MLflow · FastAPI · Terraform*
