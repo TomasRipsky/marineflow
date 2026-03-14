@@ -42,7 +42,9 @@ structlog.configure(
     ],
     logger_factory=structlog.PrintLoggerFactory(),
 )
+
 logger = structlog.get_logger(__name__)
+
 
 # =============================================================================
 # WebSocket connection and message loop
@@ -74,25 +76,18 @@ async def process_message(raw_message: str, publisher: PubSubPublisher) -> None:
         logger.warning("invalid_json_message")
         return
 
-    parsed, topic_key = parse_message(raw)
+    payload, topic_key = parse_message(raw)
 
-    if parsed is None or topic_key is None:
+    if payload is None or topic_key is None:
         # Message type not handled (e.g. BaseStationReport) — skip silently
         return
 
-    # Convert Pydantic model to dict for publishing
-    publisher.publish(parsed.model_dump(), topic_key)
+    publisher.publish(payload, topic_key)
 
 
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=2, min=2, max=60),
-    before_sleep=lambda retry_state: logger.warning(
-        "retrying_connection",
-        attempt=retry_state.attempt_number,
-        wait=retry_state.next_action.sleep,
-        error=str(retry_state.outcome.exception()),
-    ),
 )
 async def connect_and_stream(publisher: PubSubPublisher) -> None:
     """
@@ -105,10 +100,9 @@ async def connect_and_stream(publisher: PubSubPublisher) -> None:
 
     async with websockets.connect(
         Config.AIS_WS_URL,
-        open_timeout=30,
-        #ping_interval=30,     # send WebSocket ping every 30s
-        #ping_timeout=10,      # close connection if no pong in 10s
-        #close_timeout=10,
+        ping_interval=30,     # send WebSocket ping every 30s
+        ping_timeout=10,      # close connection if no pong in 10s
+        close_timeout=10,
         max_size=2**23,       # 8MB max message size
     ) as ws:
         await subscribe(ws)

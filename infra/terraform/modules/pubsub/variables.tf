@@ -25,3 +25,14 @@ variable "labels" {
   type        = map(string)
   default     = {}
 }
+
+variable "gcs_bucket" {
+  description = "GCS bucket where Cloud Storage subscriptions will land Pub/Sub messages"
+  type        = string
+}
+
+variable "pubsub_sa_email" {
+  description = "Pub/Sub service account email — needs Storage Object Creator on the GCS bucket"
+  type        = string
+  default     = "service-174180607250@gcp-sa-pubsub.iam.gserviceaccount.com"
+}

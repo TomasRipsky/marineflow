@@ -75,10 +75,10 @@ class PubSubPublisher:
         try:
             payload = json.dumps(data, default=str).encode("utf-8")
 
-            # Attach attributes for server-side filtering if needed
+            # Attach source attribute for filtering and observability
             attributes = {
                 "source": Config.MESSAGE_SOURCE,
-                "message_type": data.get("message_type", "unknown"),
+                "message_type": data.get("MessageType", "unknown"),
             }
 
             future = self._client.publish(topic_path, payload, **attributes)

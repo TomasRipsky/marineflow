@@ -2,7 +2,9 @@
 # MARINEFLOW — Spark Silver Layer Job
 # processing/spark_streaming/silver_positions.py
 #
-# Reads Bronze Parquet from GCS and applies all business transformations:
+# Reads Bronze Parquet from GCS using Spark Structured Streaming and applies
+# all business transformations. Spark tracks processed files via checkpointing
+# so only new Bronze partitions are processed — no manual hour filtering needed.
 #
 # Field renaming (Bronze raw names → Silver semantic names):
 #   MMSI              → mmsi
@@ -11,28 +13,23 @@
 #   Longitude         → longitude
 #   Sog               → speed_over_ground
 #   Cog               → course_over_ground
-#   TrueHeading       → heading (511 filtered as null)
+#   TrueHeading       → heading (511 → null)
 #   NavigationalStatus (int) → navigational_status (string)
 #   time_utc          → event_timestamp
 #
 # Enrichments derived here for the first time:
-#   flag_country         — derived from MMSI MID prefix
+#   flag_country         — from MMSI MID prefix
 #   ocean_region         — bounding box from lat/lon
 #   nearest_port         — proximity to major ports
 #   eez_country          — EEZ from port proximity
 #   is_in_port_zone      — within port radius
 #   distance_to_port_km  — Haversine distance to nearest port
-#   speed_change_rate    — delta vs previous message
-#   heading_change_degrees — delta vs previous message
+#   speed_change_rate    — delta vs previous message per vessel
+#   heading_change_degrees — delta vs previous message per vessel
 #
-# Fields intentionally excluded (they belong to vessel_metadata table):
+# Fields intentionally excluded (belong to vessel_metadata):
 #   vessel_type_normalized — from ShipStaticData, joined in Gold via dbt
 #   destination_clean      — from ShipStaticData, joined in Gold via dbt
-#
-# Delay design: Silver excludes the current hour partition while Bronze is
-# actively writing to it. This avoids FileNotFoundError race conditions at
-# the cost of a delay of up to 1 hour. Airflow (Phase 3) triggers Silver
-# once per hour over the previous hour's closed partition.
 #
 # Run:
 #   spark-submit \
@@ -44,7 +41,8 @@
 import logging
 import os
 import sys
-import time
+import uuid
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -65,16 +63,14 @@ BQ_DATASET_SILVER = os.getenv("BQ_DATASET_SILVER", "marineflow_silver")
 
 BRONZE_INPUT_DIR  = f"gs://{GCS_BUCKET}/bronze/vessel_positions"
 SILVER_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_positions"
-BQ_TABLE          = f"{GCP_PROJECT_ID}.{BQ_DATASET_SILVER}.vessel_positions_clean"
+CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_positions"
 
-BATCH_INTERVAL = int(os.getenv("SILVER_BATCH_INTERVAL", "60"))
-MAX_BATCHES    = int(os.getenv("SILVER_MAX_BATCHES", "0"))
+MAX_FILES_PER_TRIGGER = int(os.getenv("SILVER_MAX_FILES_PER_TRIGGER", "5"))
 
 # =============================================================================
 # Reference data
 # =============================================================================
 
-# AIS navigational status — ITU-R M.1371-5 Table 20
 NAV_STATUS_MAP = {
     0:  "under_way_engine",
     1:  "at_anchor",
@@ -88,7 +84,6 @@ NAV_STATUS_MAP = {
     15: "undefined",
 }
 
-# Flag country from MMSI MID prefix
 MID_MAP = {
     "211": "DE", "219": "DK", "224": "ES", "225": "ES",
     "226": "FR", "228": "FR", "232": "GB", "233": "GB",
@@ -103,7 +98,6 @@ MID_MAP = {
     "657": "TZ", "667": "GN", "710": "BR", "720": "AR",
 }
 
-# Ocean regions — (min_lat, max_lat, min_lon, max_lon, name)
 OCEAN_REGIONS = [
     (20,   45,  -10,  42,  "mediterranean"),
     (35,   90,  -30,  60,  "north_sea_arctic"),
@@ -114,7 +108,6 @@ OCEAN_REGIONS = [
     (-90,  90,   80, 180,  "pacific"),
 ]
 
-# Major ports — (lat, lon, radius_deg, name, country)
 MAJOR_PORTS = [
     (51.9,    4.1,   0.5, "Rotterdam",   "NL"),
     (53.5,    9.9,   0.5, "Hamburg",     "DE"),
@@ -135,40 +128,55 @@ MAJOR_PORTS = [
 
 
 # =============================================================================
-# Spark Session
+# Bronze schema — must match exactly what bronze_positions.py writes
 # =============================================================================
 
-def create_spark_session():
-    from pyspark.sql import SparkSession
-
-    spark = (
-        SparkSession.builder
-        .appName("MarineFlow-Silver-Positions")
-        .master(os.getenv("SPARK_MASTER", "local[*]"))
-        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
-        .config("spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped", "true")
-        .config("spark.hadoop.mapreduce.fileoutputcommitter.cleanup-failures.ignored", "true")
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        .getOrCreate()
+def get_bronze_schema():
+    from pyspark.sql.types import (
+        StructType, StructField,
+        StringType, DoubleType, IntegerType, BooleanType, TimestampType, DateType,
     )
-
-    spark.sparkContext.setLogLevel("WARN")
-    return spark
+    return StructType([
+        StructField("Cog",                      DoubleType(),    True),
+        StructField("CommunicationState",        IntegerType(),   True),
+        StructField("Latitude",                  DoubleType(),    True),
+        StructField("Longitude",                 DoubleType(),    True),
+        StructField("MessageID",                 IntegerType(),   True),
+        StructField("NavigationalStatus",        IntegerType(),   True),
+        StructField("PositionAccuracy",          BooleanType(),   True),
+        StructField("Raim",                      BooleanType(),   True),
+        StructField("RateOfTurn",                IntegerType(),   True),
+        StructField("RepeatIndicator",           IntegerType(),   True),
+        StructField("Sog",                       DoubleType(),    True),
+        StructField("Spare",                     IntegerType(),   True),
+        StructField("SpecialManoeuvreIndicator", IntegerType(),   True),
+        StructField("Timestamp",                 IntegerType(),   True),
+        StructField("TrueHeading",               IntegerType(),   True),
+        StructField("UserID",                    IntegerType(),   True),
+        StructField("Valid",                     BooleanType(),   True),
+        StructField("MMSI",                      StringType(),    True),
+        StructField("MMSI_String",               StringType(),    True),
+        StructField("ShipName",                  StringType(),    True),
+        StructField("time_utc",                  TimestampType(), True),
+        StructField("ingestion_timestamp",       TimestampType(), True),
+        StructField("_pubsub_message_id",        StringType(),    True),
+        StructField("_pubsub_publish_time",      StringType(),    True),
+        StructField("_source_system",            StringType(),    True),
+        StructField("_batch_id",                 StringType(),    True),
+        StructField("_pipeline_version",         StringType(),    True),
+        StructField("_ingestion_date",           DateType(),      True),
+        StructField("_source_file",              StringType(),    True),
+    ])
 
 
 # =============================================================================
-# Step 1 — Rename Bronze fields to Silver semantic names
+# Transformations
 # =============================================================================
 
 def rename_bronze_fields(df):
-    """
-    Rename raw Bronze field names to Silver semantic names.
-    First transformation in the pipeline — after this, no code references Bronze names.
-    """
+    """Rename raw Bronze field names to Silver semantic names."""
     from pyspark.sql import functions as F
 
-    # Navigational status: integer → string via ITU-R M.1371-5 Table 20
     nav_expr = F.lit(None).cast("string")
     for code, label in NAV_STATUS_MAP.items():
         nav_expr = F.when(F.col("NavigationalStatus") == code, label).otherwise(nav_expr)
@@ -177,7 +185,6 @@ def rename_bronze_fields(df):
         F.concat(F.lit("unknown_"), F.col("NavigationalStatus").cast("string"))
     ).otherwise(nav_expr)
 
-    # Flag country from MMSI MID prefix
     flag_expr = F.lit(None).cast("string")
     for mid, country in MID_MAP.items():
         flag_expr = F.when(F.col("MMSI").startswith(mid), country).otherwise(flag_expr)
@@ -197,10 +204,6 @@ def rename_bronze_fields(df):
     })
 
 
-# =============================================================================
-# Step 2 — Deduplication
-# =============================================================================
-
 def deduplicate(df):
     """Remove duplicate (mmsi, event_timestamp) — keep most recently ingested."""
     from pyspark.sql import functions as F, Window
@@ -215,16 +218,11 @@ def deduplicate(df):
     )
 
 
-# =============================================================================
-# Step 3 — Geospatial enrichment
-# =============================================================================
-
 def enrich_geospatial(df):
-    """Add ocean region, port proximity and Haversine distance to nearest port."""
+    """Add ocean region, port proximity and Haversine distance."""
     from pyspark.sql import functions as F
     from pyspark.sql.types import StringType
 
-    # Ocean region — bounding box lookup
     ocean_expr = F.lit("open_ocean")
     for min_lat, max_lat, min_lon, max_lon, region in OCEAN_REGIONS:
         ocean_expr = F.when(
@@ -234,7 +232,6 @@ def enrich_geospatial(df):
         ).otherwise(ocean_expr)
     df = df.withColumn("ocean_region", ocean_expr)
 
-    # Port proximity
     port_expr     = F.lit(None).cast(StringType())
     country_expr  = F.lit(None).cast(StringType())
     in_port_expr  = F.lit(False)
@@ -260,8 +257,7 @@ def enrich_geospatial(df):
         "_port_lon":       port_lon_expr,
     })
 
-    # Haversine approximation — 1 degree ≈ 111 km
-    df = df.withColumn(
+    return df.withColumn(
         "distance_to_port_km",
         F.when(
             F.col("_port_lat").isNotNull(),
@@ -272,12 +268,6 @@ def enrich_geospatial(df):
         ).otherwise(None)
     ).drop("_port_lat", "_port_lon")
 
-    return df
-
-
-# =============================================================================
-# Step 4 — Movement deltas
-# =============================================================================
 
 def calculate_movement_deltas(df):
     """Speed and heading change vs previous message per vessel."""
@@ -301,12 +291,8 @@ def calculate_movement_deltas(df):
     }).drop("prev_speed", "prev_heading")
 
 
-# =============================================================================
-# Master transform
-# =============================================================================
-
 def transform_to_silver(df):
-    """Apply all Silver transformations in sequence and select final schema."""
+    """Apply all Silver transformations and select final schema."""
     from pyspark.sql import functions as F
 
     df = rename_bronze_fields(df)
@@ -349,65 +335,58 @@ def transform_to_silver(df):
 
 
 # =============================================================================
-# Read Bronze
+# Write micro-batch
 # =============================================================================
 
-def read_bronze(spark, last_processed_date: str = None):
+def process_micro_batch(df, epoch_id: int):
     """
-    Read Bronze Parquet excluding the current hour partition.
-    Bronze is still writing to the current hour — reading it would cause
-    FileNotFoundError if Bronze overwrites a file Silver is scanning.
-    Silver processes only fully closed partitions (max delay: 1 hour).
+    Called by Structured Streaming for each micro-batch.
+    Spark guarantees each Bronze file is processed exactly once via checkpointing.
+    No manual hour filtering needed — the checkpoint handles it.
     """
     from pyspark.sql import functions as F
-    from datetime import datetime, timezone
 
-    now          = datetime.now(timezone.utc)
-    current_date = now.strftime("%Y-%m-%d")
-    current_hour = now.hour
+    silver_batch_id = str(uuid.uuid4())[:8]
+    logger.info(f"Processing Silver micro-batch epoch={epoch_id} batch_id={silver_batch_id}")
 
-    df = spark.read.parquet(BRONZE_INPUT_DIR)
+    silver_df = transform_to_silver(df)
+    silver_df = silver_df.withColumns({
+        "_silver_batch_id": F.lit(silver_batch_id),
+        "partition_date":   F.to_date(F.col("event_timestamp")),
+    })
 
-    df = df.filter(
-        ~(
-            (F.col("partition_date").cast("string") == current_date)
-            & (F.col("partition_hour") == current_hour)
-        )
-    )
-
-    if os.getenv("SILVER_DEBUG"):
-        logger.info("DEBUG mode: limited to 10 rows")
-        return df.limit(10)
-
-    if last_processed_date:
-        df = df.filter(F.col("partition_date") >= last_processed_date)
-
-    return df
-
-
-# =============================================================================
-# Write
-# =============================================================================
-
-def write_gcs(df, batch_number: int) -> int:
-    """Write Silver Parquet to GCS partitioned by event date. Returns record count."""
-    from pyspark.sql import functions as F
-
-    enriched     = df.withColumn("partition_date", F.to_date(F.col("event_timestamp")))
-    record_count = enriched.count()
-
+    record_count = silver_df.count()
     if record_count == 0:
-        logger.info(f"Batch {batch_number}: no records to write to GCS")
-        return 0
+        logger.info(f"Micro-batch {epoch_id}: no records after transformation")
+        return
 
-    # coalesce(2) — limits small file accumulation per daily partition.
-    # Silver appends across many batches so we allow 2 files per partition
-    # to balance write parallelism vs file count.
-    enriched.coalesce(2).write.mode("append").partitionBy("partition_date").parquet(SILVER_OUTPUT_DIR)
-    logger.info(f"Batch {batch_number}: wrote {record_count} records to {SILVER_OUTPUT_DIR}")
-    return record_count
+    (
+        silver_df.coalesce(2)
+        .write
+        .mode("append")
+        .partitionBy("partition_date")
+        .parquet(SILVER_OUTPUT_DIR)
+    )
+    logger.info(f"Micro-batch {epoch_id}: wrote {record_count} records to {SILVER_OUTPUT_DIR}")
 
 
+# =============================================================================
+# Spark Session
+# =============================================================================
+
+def create_spark_session():
+    from pyspark.sql import SparkSession
+
+    spark = (
+        SparkSession.builder
+        .appName("MarineFlow-Silver-Positions")
+        .master(os.getenv("SPARK_MASTER", "local[*]"))
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+    return spark
 
 
 # =============================================================================
@@ -425,50 +404,39 @@ def main() -> None:
     validate_config()
 
     logger.info("Starting MarineFlow Silver Positions job")
-    logger.info(f"Input:    {BRONZE_INPUT_DIR}")
-    logger.info(f"Output:   {SILVER_OUTPUT_DIR}")
-    logger.info(f"BigQuery: {BQ_TABLE}")
+    logger.info(f"Input:      {BRONZE_INPUT_DIR}")
+    logger.info(f"Output:     {SILVER_OUTPUT_DIR}")
+    logger.info(f"Checkpoint: {CHECKPOINT_DIR}")
 
-    spark        = create_spark_session()
-    total_records = 0
-    batch_number  = 0
+    spark = create_spark_session()
+
+    # Read new Bronze Parquet files as they arrive.
+    # Spark tracks processed files via checkpointing — no manual filtering needed.
+    # Schema must be specified explicitly for streaming sources.
+    bronze_stream = (
+        spark.readStream
+        .format("parquet")
+        .schema(get_bronze_schema())
+        .option("path", BRONZE_INPUT_DIR)
+        .option("maxFilesPerTrigger", MAX_FILES_PER_TRIGGER)
+        .option("latestFirst", "false")
+        .option("recursiveFileLookup", "true")
+        .load()
+    )
+
+    query = (
+        bronze_stream.writeStream
+        .foreachBatch(process_micro_batch)
+        .option("checkpointLocation", CHECKPOINT_DIR)
+        .trigger(processingTime="60 seconds")
+        .start()
+    )
 
     try:
-        while True:
-            batch_number += 1
-            logger.info(f"Starting Silver batch {batch_number}")
-
-            try:
-                bronze_df = read_bronze(spark)
-                silver_df = transform_to_silver(bronze_df)
-                records   = write_gcs(silver_df, batch_number)
-                total_records += records
-
-                # BigQuery reads directly from GCS via external table —
-                # no explicit write needed here.
-
-            except Exception as e:
-                # Bronze directory is empty when Silver starts before the first
-                # Bronze batch completes — log and retry on the next cycle.
-                if "UNABLE_TO_INFER_SCHEMA" in str(e) or "Unable to infer schema" in str(e):
-                    logger.info(f"Batch {batch_number}: Bronze not ready yet, retrying next cycle")
-                else:
-                    logger.error(f"Batch {batch_number} failed: {e}", exc_info=True)
-
-            logger.info(f"Total Silver records written: {total_records}")
-
-            if MAX_BATCHES > 0 and batch_number >= MAX_BATCHES:
-                logger.info(f"Reached max batches ({MAX_BATCHES}), stopping")
-                break
-
-            logger.info(f"Waiting {BATCH_INTERVAL}s until next batch...")
-            time.sleep(BATCH_INTERVAL)
-
+        query.awaitTermination()
     except KeyboardInterrupt:
-        logger.info(f"Shutdown signal: total records written: {total_records}")
-    except Exception as e:
-        logger.error(f"Silver job failed: {e}", exc_info=True)
-        sys.exit(1)
+        logger.info("Shutdown signal received")
+        query.stop()
     finally:
         spark.stop()
         logger.info("Spark session stopped")
