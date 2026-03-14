@@ -6,46 +6,63 @@
 services:
 
   # ---------------------------------------------------------------------------
-  # Spark Master
+  # Spark Bronze — reads from GCS pubsub-landing via Structured Streaming
+  # Each job runs in its own container to avoid concurrent checkpoint conflicts.
   # ---------------------------------------------------------------------------
-  spark-master:
+  spark-bronze:
     image: apache/spark:3.5.0
-    container_name: marineflow-spark-master
-    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    container_name: marineflow-spark-bronze
+    entrypoint: ["/bin/sleep", "infinity"]   # keep alive for docker exec
     environment:
-      - SPARK_MASTER_WEBUI_PORT=8080
-      - SPARK_MASTER_PORT=7077
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET=${GCS_BUCKET}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
-      - GOOGLE_CLOUD_PROJECT=marineflow-489815
-    ports:
-      - "4040:8080"   # Spark Master UI
-      - "7077:7077"   # Spark Master port
+      - PIPELINE_VERSION=${PIPELINE_VERSION:-0.1.0}
+      - SPARK_MASTER=local[2]
     volumes:
       - ./processing:/opt/spark/processing
-      - C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json:/tmp/adc.json:ro
+      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
     networks:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # Spark Worker
+  # Spark Silver Positions — reads from GCS Bronze via Structured Streaming
   # ---------------------------------------------------------------------------
-  spark-worker:
+  spark-silver-positions:
     image: apache/spark:3.5.0
-    container_name: marineflow-spark-worker
-    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    container_name: marineflow-spark-silver-positions
+    entrypoint: ["/bin/sleep", "infinity"]
     environment:
-      - SPARK_WORKER_MEMORY=2g
-      - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_WEBUI_PORT=8081
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET=${GCS_BUCKET}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
-      - GOOGLE_CLOUD_PROJECT=marineflow-489815
-    ports:
-      - "4041:8081"   # Spark Worker UI
+      - BQ_DATASET_SILVER=marineflow_silver
+      - SPARK_MASTER=local[2]
     volumes:
       - ./processing:/opt/spark/processing
-      - C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json:/tmp/adc.json:ro
-    depends_on:
-      - spark-master
+      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
+  # Spark Silver Metadata — reads from GCS pubsub-landing/vessel-metadata
+  # ---------------------------------------------------------------------------
+  spark-silver-metadata:
+    image: apache/spark:3.5.0
+    container_name: marineflow-spark-silver-metadata
+    entrypoint: ["/bin/sleep", "infinity"]
+    environment:
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET=${GCS_BUCKET}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
+      - BQ_DATASET_SILVER=marineflow_silver
+      - SPARK_MASTER=local[2]
+    volumes:
+      - ./processing:/opt/spark/processing
+      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
     networks:
       - marineflow-net
 
@@ -103,10 +120,9 @@ services:
     ports:
       - "5001:5001"
     environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
-      - GOOGLE_CLOUD_PROJECT=marineflow-489815
+      - GOOGLE_APPLICATION_CREDENTIALS=/opt/gcp-credentials.json
     volumes:
-      - C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json:/tmp/adc.json:ro
+      - ./gcp-credentials.json:/opt/gcp-credentials.json:ro
     depends_on:
       postgres:
         condition: service_healthy
