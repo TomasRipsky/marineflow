@@ -76,6 +76,16 @@ module "pubsub" {
   depends_on = [module.iam, module.gcs]
 }
 
+module "cloud_run" {
+  source                = "./modules/cloud_run"
+  project_id            = var.project_id
+  region                = var.region
+  service_account_email = module.iam.service_account_email
+  labels                = local.common_labels
+
+  depends_on = [module.iam]
+}
+
 module "bigquery" {
   source       = "./modules/bigquery"
   project_id   = var.project_id
