@@ -100,10 +100,11 @@ async def connect_and_stream(publisher: PubSubPublisher) -> None:
 
     async with websockets.connect(
         Config.AIS_WS_URL,
-        ping_interval=30,     # send WebSocket ping every 30s
-        ping_timeout=10,      # close connection if no pong in 10s
+        open_timeout=30,
+        ping_interval=20,
+        ping_timeout=10,
         close_timeout=10,
-        max_size=2**23,       # 8MB max message size
+        max_size=2**23,
     ) as ws:
         await subscribe(ws)
         logger.info("streaming_started")
