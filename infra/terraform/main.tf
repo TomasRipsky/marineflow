@@ -76,11 +76,13 @@ module "pubsub" {
   depends_on = [module.iam, module.gcs]
 }
 
-module "cloud_run" {
-  source                = "./modules/cloud_run"
+module "compute" {
+  source                = "./modules/compute"
   project_id            = var.project_id
   region                = var.region
+  zone                  = "${var.region}-a"
   service_account_email = module.iam.service_account_email
+  repo_url              = var.repo_url
   labels                = local.common_labels
 
   depends_on = [module.iam]

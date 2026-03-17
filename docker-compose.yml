@@ -141,6 +141,7 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
     volumes:
       - ./orchestration/dags:/opt/airflow/dags
+      - ./transformation/dbt:/opt/airflow/dbt
       - airflow-logs:/opt/airflow/logs
       - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
     depends_on:
