@@ -61,3 +61,8 @@ variable "pubsub_ack_deadline_seconds" {
   type        = number
   default     = 60
 }
+
+variable "repo_url" {
+  description = "Git repository URL"
+  type        = string
+}

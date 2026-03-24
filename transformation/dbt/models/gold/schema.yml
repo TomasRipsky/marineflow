@@ -14,27 +14,54 @@ models:
         description: "Vessel MMSI"
         tests:
           - not_null
+          - dbt_utils.not_constant
       - name: date_day
         description: "Activity date"
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= current_date()"
+              name: date_day_not_in_future
+          - dbt_utils.expression_is_true:
+              expression: ">= date('2019-01-01')"
+              name: date_day_not_before_ais_era
       - name: position_count
         description: "Number of AIS position reports received"
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 1"
+              name: position_count_at_least_one
       - name: avg_speed_knots
         description: "Average speed over ground in knots"
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or (avg_speed_knots >= 0 and avg_speed_knots < 60)"
+              name: avg_speed_knots_plausible_range
       - name: estimated_distance_km
         description: "Estimated distance travelled in km"
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or estimated_distance_km >= 0"
+              name: estimated_distance_km_non_negative
       - name: max_ais_gap_minutes
         description: "Longest AIS silence gap in minutes"
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or max_ais_gap_minutes >= 0"
+              name: max_ais_gap_minutes_non_negative
+          - dbt_utils.expression_is_true:
+              expression: "is null or max_ais_gap_minutes <= 43200"
+              name: max_ais_gap_minutes_under_30_days
       - name: gold_processed_at
         description: "When this Gold record was created"
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= current_timestamp()"
+              name: gold_processed_at_not_in_future
 
     tests:
-      # Grain test — no duplicate (mmsi, date_day) pairs
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
             - mmsi
@@ -52,23 +79,39 @@ models:
         description: "Port name"
         tests:
           - not_null
+          - dbt_utils.not_constant
       - name: date_day
         description: "Traffic date"
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= current_date()"
+              name: date_day_not_in_future
       - name: unique_vessels
         description: "Number of distinct vessels observed in this port"
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 1"
+              name: unique_vessels_at_least_one
+          - dbt_utils.expression_is_true:
+              expression: "< 5000"
+              name: unique_vessels_realistic_cap
       - name: gold_processed_at
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= current_timestamp()"
+              name: gold_processed_at_not_in_future
 
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
             - nearest_port
             - date_day
+      - dbt_utils.expression_is_true:
+          expression: "length(trim(nearest_port)) > 0"
+          name: nearest_port_not_empty_string
 
   # ---------------------------------------------------------------------------
   # anomaly_candidates
@@ -86,6 +129,12 @@ models:
       - name: mmsi
         tests:
           - not_null
+      - name: date_day
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= current_date()"
+              name: date_day_not_in_future
       - name: alert_type
         tests:
           - not_null
@@ -106,3 +155,268 @@ models:
       - name: gold_processed_at
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= current_timestamp()"
+              name: gold_processed_at_not_in_future
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - mmsi
+            - date_day
+            - alert_type
+      - dbt_utils.expression_is_true:
+          expression: "not (alert_type = 'dark_vessel' and severity = 'low')"
+          name: dark_vessel_severity_minimum_medium
+      # alert_id MD5 length — a nivel de modelo para evitar el prefijo automático
+      - dbt_utils.expression_is_true:
+          expression: "length(alert_id) = 32"
+          name: alert_id_is_valid_md5
+
+  # ---------------------------------------------------------------------------
+  # vessel_dark_events
+  # ---------------------------------------------------------------------------
+  - name: vessel_dark_events
+    description: >
+      One row per AIS blackout event. Grain: one row per (mmsi, signal_recovered_at).
+    columns:
+      - name: dark_event_id
+        tests:
+          - not_null
+          - unique
+      - name: mmsi
+        tests:
+          - not_null
+      - name: gap_minutes
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 120"
+              name: gap_minutes_above_detection_threshold
+          - dbt_utils.expression_is_true:
+              expression: "<= 525600"
+              name: gap_minutes_under_one_year
+      - name: displacement_km
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or displacement_km >= 0"
+              name: displacement_km_non_negative
+          - dbt_utils.expression_is_true:
+              expression: "is null or displacement_km < 20000"
+              name: displacement_km_physically_possible
+      - name: severity
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - CRITICAL
+                - HIGH
+                - MEDIUM
+      - name: signal_lost_at
+        tests:
+          - not_null
+      - name: signal_recovered_at
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> signal_lost_at"
+              name: recovery_after_loss
+      - name: event_date
+        tests:
+          - not_null
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - mmsi
+            - signal_recovered_at
+      - dbt_utils.expression_is_true:
+          expression: "length(dark_event_id) = 32"
+          name: dark_event_id_is_valid_md5
+      - dbt_utils.expression_is_true:
+          expression: "abs(timestamp_diff(signal_recovered_at, signal_lost_at, minute) - gap_minutes) <= 1"
+          name: gap_minutes_consistent_with_timestamps
+
+  # ---------------------------------------------------------------------------
+  # vessel_speed_anomalies
+  # ---------------------------------------------------------------------------
+  - name: vessel_speed_anomalies
+    description: >
+      One row per speed anomaly event. Detects GPS spoofing, impossible speeds,
+      and sudden accelerations by vessel type.
+    columns:
+      - name: anomaly_id
+        tests:
+          - not_null
+          - unique
+      - name: mmsi
+        tests:
+          - not_null
+      - name: reported_sog
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or (reported_sog >= 0 and reported_sog < 102.3)"
+              name: reported_sog_valid_ais_range
+      - name: calculated_speed_knots
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              name: calculated_speed_non_negative
+      - name: speed_excess_knots
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or speed_excess_knots > 0"
+              name: speed_excess_is_positive_when_present
+      - name: anomaly_type
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - GPS_SPOOFING
+                - IMPOSSIBLE_SPEED
+                - SUDDEN_ACCELERATION
+      - name: event_date
+        tests:
+          - not_null
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - mmsi
+            - event_timestamp
+      - dbt_utils.expression_is_true:
+          expression: "length(anomaly_id) = 32"
+          name: anomaly_id_is_valid_md5
+      # SUDDEN_ACCELERATION no implica speed_excess — solo GPS_SPOOFING e IMPOSSIBLE_SPEED
+      - dbt_utils.expression_is_true:
+          expression: "not (anomaly_type in ('GPS_SPOOFING', 'IMPOSSIBLE_SPEED') and coalesce(speed_excess_knots, 0) <= 0)"
+          name: spoofing_implies_speed_excess
+
+  # ---------------------------------------------------------------------------
+  # vessel_loitering
+  # ---------------------------------------------------------------------------
+  - name: vessel_loitering
+    description: >
+      One row per loitering session. Primary signal for STS transfer detection.
+    columns:
+      - name: loiter_event_id
+        tests:
+          - not_null
+          - unique
+      - name: mmsi
+        tests:
+          - not_null
+      - name: duration_minutes
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 180"
+              name: duration_above_detection_threshold
+      - name: avg_speed_knots
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0.1 and avg_speed_knots <= 4.0"
+              name: avg_speed_within_loiter_band
+      - name: avg_heading_change
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "is null or avg_heading_change >= 0"
+              name: avg_heading_change_non_negative
+      - name: risk_level
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - HIGH
+                - MEDIUM
+                - LOW
+      - name: window_start
+        tests:
+          - not_null
+      - name: window_end
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> window_start"
+              name: window_end_after_window_start
+      - name: event_date
+        tests:
+          - not_null
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - mmsi
+            - window_start
+      - dbt_utils.expression_is_true:
+          expression: "length(loiter_event_id) = 32"
+          name: loiter_event_id_is_valid_md5
+      - dbt_utils.expression_is_true:
+          expression: "not (potential_sts_transfer = true and avg_distance_to_port_km < 50)"
+          name: sts_flag_requires_offshore_position
+      - dbt_utils.expression_is_true:
+          expression: "abs(timestamp_diff(window_end, window_start, minute) - duration_minutes) <= 1"
+          name: duration_consistent_with_timestamps
+
+  # ---------------------------------------------------------------------------
+  # vessel_risk_score
+  # ---------------------------------------------------------------------------
+  - name: vessel_risk_score
+    description: >
+      Daily consolidated risk score per vessel. Grain: one row per (mmsi, score_date).
+      Aggregates signals from dark_events, speed_anomalies, and loitering over 30 days.
+    columns:
+      - name: score_id
+        tests:
+          - not_null
+          - unique
+      - name: mmsi
+        tests:
+          - not_null
+      - name: risk_score
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+              name: risk_score_positive
+          - dbt_utils.expression_is_true:
+              expression: "< 10000"
+              name: risk_score_realistic_cap
+      - name: score_date
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= current_date()"
+              name: score_date_not_in_future
+      - name: spoofing_signals_30d
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              name: spoofing_signals_non_negative
+      - name: sts_signals_30d
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              name: sts_signals_non_negative
+      - name: dark_events_30d
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              name: dark_events_non_negative
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - mmsi
+            - score_date
+      - dbt_utils.expression_is_true:
+          expression: "length(score_id) = 32"
+          name: score_id_is_valid_md5
+      - dbt_utils.expression_is_true:
+          expression: "not (spoofing_signals_30d > 0 and risk_score < 15)"
+          name: risk_score_reflects_spoofing_weight
+      - dbt_utils.expression_is_true:
+          expression: "sts_signals_30d <= loiter_events_30d"
+          name: sts_signals_subset_of_loiter_events
