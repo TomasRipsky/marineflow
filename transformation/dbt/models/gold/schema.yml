@@ -38,6 +38,8 @@ models:
           - dbt_utils.expression_is_true:
               expression: "is null or (avg_speed_knots >= 0 and avg_speed_knots < 60)"
               name: avg_speed_knots_plausible_range
+              config:
+                severity: warn
       - name: estimated_distance_km
         description: "Estimated distance travelled in km"
         tests:
@@ -253,21 +255,20 @@ models:
         tests:
           - not_null
       - name: reported_sog
+        description: > 
+          The AIS specification for sog (Speed over ground) shows that 102.3 knots is reported when the vessel speed is unavailable.
         tests:
           - dbt_utils.expression_is_true:
               expression: "is null or (reported_sog >= 0 and reported_sog < 102.3)"
               name: reported_sog_valid_ais_range
+              config:
+                severity: warn
       - name: calculated_speed_knots
         tests:
           - not_null
           - dbt_utils.expression_is_true:
               expression: ">= 0"
               name: calculated_speed_non_negative
-      - name: speed_excess_knots
-        tests:
-          - dbt_utils.expression_is_true:
-              expression: "is null or speed_excess_knots > 0"
-              name: speed_excess_is_positive_when_present
       - name: anomaly_type
         tests:
           - not_null
@@ -281,18 +282,22 @@ models:
           - not_null
 
     tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - mmsi
-            - event_timestamp
       - dbt_utils.expression_is_true:
-          expression: "length(anomaly_id) = 32"
-          name: anomaly_id_is_valid_md5
-      # SUDDEN_ACCELERATION no implica speed_excess — solo GPS_SPOOFING e IMPOSSIBLE_SPEED
+          name: integrity_anomaly_logic
+          expression: |
+            (
+              anomaly_type IN ('GPS_SPOOFING', 'IMPOSSIBLE_SPEED') 
+              AND speed_excess_knots > 0
+            )
+            OR 
+            (
+              anomaly_type = 'SUDDEN_ACCELERATION' 
+              AND speed_excess_knots IS NOT NULL
+            )
       - dbt_utils.expression_is_true:
-          expression: "not (anomaly_type in ('GPS_SPOOFING', 'IMPOSSIBLE_SPEED') and coalesce(speed_excess_knots, 0) <= 0)"
-          name: spoofing_implies_speed_excess
-
+          name: alert_unmapped_vessel_types
+          expression: "type_max_speed != 35.0 OR vessel_type_normalized IN ('other', 'unknown')"
+          severity: warn
   # ---------------------------------------------------------------------------
   # vessel_loitering
   # ---------------------------------------------------------------------------

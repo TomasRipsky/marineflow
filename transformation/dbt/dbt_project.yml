@@ -21,11 +21,6 @@ models:
       +dataset: marineflow_silver  # reads from Silver dataset
       +tags: ["staging"]
 
-    silver:
-      +materialized: view
-      +dataset: marineflow_silver
-      +tags: ["silver"]
-
     gold:
       +materialized: table         # gold = persisted tables for analytics + ML
       +dataset: marineflow_gold

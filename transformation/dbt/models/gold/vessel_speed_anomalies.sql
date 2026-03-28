@@ -50,12 +50,15 @@ with_calculated_speed as (
 type_limits as (
     select vessel_type_normalized, max_speed_knots
     from unnest([
-        struct('cargo'      as vessel_type_normalized, 25.0 as max_speed_knots),
-        struct('tanker',    18.0),
-        struct('fishing',   15.0),
-        struct('passenger', 30.0),
-        struct('tug',       14.0),
-        struct('unknown',   35.0)
+        struct('cargo'               as vessel_type_normalized, 25.0 as max_speed_knots),
+        struct('tanker',             18.0),
+        struct('fishing',            15.0),
+        struct('passenger',          30.0),
+        struct('tug',                14.0),
+        struct('special_craft',      20.0), 
+        struct('sailing_or_pleasure', 20.0), 
+        struct('other',              35.0),
+        struct('unknown',            35.0)
     ])
 )
 
@@ -72,8 +75,9 @@ select
     s.reported_sog,
     s.calculated_speed_knots,
     s.speed_change_rate,
-    t.max_speed_knots                                               as type_max_speed,
-    round(s.calculated_speed_knots - t.max_speed_knots, 2)         as speed_excess_knots,
+    coalesce(t.max_speed_knots, 35.0) as type_max_speed,
+    round(s.calculated_speed_knots - coalesce(t.max_speed_knots, 35.0), 2) as speed_delta_knots,
+    greatest(s.calculated_speed_knots - coalesce(t.max_speed_knots, 35.0), 0) as speed_excess_knots,
     s.latitude,
     s.longitude,
     case
