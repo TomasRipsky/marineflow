@@ -168,8 +168,8 @@ models:
             - date_day
             - alert_type
       - dbt_utils.expression_is_true:
-          expression: "not (alert_type = 'dark_vessel' and severity = 'low')"
-          name: dark_vessel_severity_minimum_medium
+          expression: "not (alert_type = 'dark_vessel' and severity != 'high')"
+          name: dark_vessel_severity_must_be_high
       # alert_id MD5 length — a nivel de modelo para evitar el prefijo automático
       - dbt_utils.expression_is_true:
           expression: "length(alert_id) = 32"
