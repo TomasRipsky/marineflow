@@ -212,27 +212,53 @@ or Delta Lake automatic compaction.
         doc_md="Short-circuit if Silver has no new data — prevents unnecessary dbt runs.",
     )
 
-    # ── 2. dbt run ─────────────────────────────────────────────────────────
-    dbt_run = BashOperator(
-        task_id="dbt_run",
-        bash_command=(
-            f"cd {DBT_DIR} && "
-            f"/home/airflow/.local/bin/dbt run --profiles-dir {DBT_PROFILES} --target prod"
+    DBT = "/home/airflow/.local/bin/dbt"
+    DBT_CMD = f"cd {DBT_DIR} && {DBT} {{}} --profiles-dir {DBT_PROFILES} --target prod"
+
+    # ── 2. dbt — batch models (no dependencies between them) ───────────────
+    dbt_batch = BashOperator(
+        task_id="dbt_batch_models",
+        bash_command=DBT_CMD.format(
+            "run --select vessel_activity_summary port_traffic anomaly_candidates"
         ),
-        doc_md="Materialize Gold models from Silver data.",
+        doc_md="Materialize batch Gold models — no inter-model dependencies.",
     )
 
-    # ── 3. dbt test ────────────────────────────────────────────────────────
+    # ── 3. dbt — incremental detection models ─────────────────────────────
+    # Run in parallel — all read from stg_vessel_positions independently
+    dbt_dark = BashOperator(
+        task_id="dbt_dark_events",
+        bash_command=DBT_CMD.format("run --select vessel_dark_events"),
+        doc_md="Detect AIS blackout events (gap > 120 min).",
+    )
+
+    dbt_speed = BashOperator(
+        task_id="dbt_speed_anomalies",
+        bash_command=DBT_CMD.format("run --select vessel_speed_anomalies"),
+        doc_md="Detect GPS spoofing, impossible speeds and sudden accelerations.",
+    )
+
+    dbt_loitering = BashOperator(
+        task_id="dbt_loitering",
+        bash_command=DBT_CMD.format("run --select vessel_loitering"),
+        doc_md="Detect loitering sessions and potential STS transfers.",
+    )
+
+    # ── 4. dbt — risk score (depends on all three detection models) ────────
+    dbt_risk = BashOperator(
+        task_id="dbt_risk_score",
+        bash_command=DBT_CMD.format("run --select vessel_risk_score"),
+        doc_md="Aggregate 30-day risk score from dark events, speed anomalies and loitering.",
+    )
+
+    # ── 5. dbt test — all models ───────────────────────────────────────────
     dbt_test = BashOperator(
         task_id="dbt_test",
-        bash_command=(
-            f"cd {DBT_DIR} && "
-            f"/home/airflow/.local/bin/dbt test --profiles-dir {DBT_PROFILES} --target prod"
-        ),
-        doc_md="Run data quality tests — fails the DAG run if any test fails.",
+        bash_command=DBT_CMD.format("test"),
+        doc_md="Run all data quality tests across Gold models.",
     )
 
-    # ── 4. Gate: daily only ────────────────────────────────────────────────
+    # ── 6. Gate: daily only ────────────────────────────────────────────────
     daily_gate = ShortCircuitOperator(
         task_id="is_daily_run",
         python_callable=is_daily_run,
@@ -240,7 +266,7 @@ or Delta Lake automatic compaction.
         doc_md="Only proceed to compaction at the 02:05 UTC run.",
     )
 
-    # ── 5. Compact Silver GCS ──────────────────────────────────────────────
+    # ── 7. Compact Silver GCS ──────────────────────────────────────────────
     compact_gcs = PythonOperator(
         task_id="compact_gcs",
         python_callable=compact_silver_partition,
@@ -249,4 +275,21 @@ or Delta Lake automatic compaction.
     )
 
     # ── Dependencies ───────────────────────────────────────────────────────
-    check_silver >> dbt_run >> dbt_test >> daily_gate >> compact_gcs
+    #
+    #   check_silver
+    #        │
+    #   dbt_batch   ──┐
+    #   dbt_dark    ──┤
+    #   dbt_speed   ──┤  (parallel)
+    #   dbt_loitering─┤
+    #                 │
+    #            dbt_risk_score
+    #                 │
+    #            dbt_test
+    #                 │
+    #            daily_gate ── compact_gcs
+    #
+    check_silver >> [dbt_batch, dbt_dark, dbt_speed, dbt_loitering]
+    [dbt_dark, dbt_speed, dbt_loitering] >> dbt_risk
+    [dbt_batch, dbt_risk] >> dbt_test
+    dbt_test >> daily_gate >> compact_gcs

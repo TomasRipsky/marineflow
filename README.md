@@ -286,11 +286,50 @@ Truncating a BQ table has no effect on data. `terraform apply` recreates any dro
 
 #### dbt Gold Models
 
-| Model | Grain | Key metrics |
+Seven models across two tiers — batch aggregations and incremental event detection:
+
+**Batch models** (full refresh each run):
+
+| Model | Grain | Description |
 |-------|-------|-------------|
-| `vessel_activity_summary` | (mmsi, date_day) | distance_km, avg_speed, ais_gaps, sharp_turns |
-| `port_traffic` | (nearest_port, date_day) | unique_vessels, vessel_entries, flag diversity |
-| `anomaly_candidates` | (mmsi, date_day, alert_type) | ais_gap · speed_anomaly · dark_vessel · erratic_course |
+| `vessel_activity_summary` | (mmsi, date_day) | Daily activity — distance, speed, AIS gaps, sharp turns |
+| `port_traffic` | (nearest_port, date_day) | Daily port traffic — vessel types, entries, flag diversity |
+| `anomaly_candidates` | (mmsi, date_day, alert_type) | Rule-based flags: ais_gap, speed_anomaly, dark_vessel, erratic_course |
+
+**Incremental event detection models** (merge strategy, partition by event_date):
+
+| Model | Grain | Description |
+|-------|-------|-------------|
+| `vessel_dark_events` | (mmsi, signal_recovered_at) | AIS blackout events >120 min — detects transponder tampering, EEZ crossings during gap |
+| `vessel_speed_anomalies` | (mmsi, event_timestamp) | GPS spoofing, impossible speeds and sudden accelerations by vessel type |
+| `vessel_loitering` | (mmsi, window_start) | Loitering sessions (0.1–4 knots, outside port, >3h) — STS transfer detection |
+| `vessel_risk_score` | (mmsi, score_date) | 30-day weighted risk score aggregating all detection signals |
+
+**Risk score weighting:**
+```
+GPS spoofing signals  × 15
+STS transfer signals  × 12
+Dark events           × 10
+EEZ crossing gaps     × 8
+Speed anomalies       × 5
+Loitering events      × 3
+```
+
+**Model dependency graph:**
+```
+stg_vessel_positions
+        │
+        ├── vessel_activity_summary    ─┐
+        ├── port_traffic               ─┤  (batch, parallel)
+        ├── anomaly_candidates         ─┤
+        ├── vessel_dark_events         ─┤
+        ├── vessel_speed_anomalies     ─┤  (incremental, parallel)
+        ├── vessel_loitering           ─┘
+        │                               │
+        └───────────────────────────────▼
+                               vessel_risk_score
+                               (depends on dark + speed + loitering)
+```
 
 `stg_vessel_positions` joins positions + metadata — single join point for all Gold models.
 
@@ -299,17 +338,22 @@ Truncating a BQ table has no effect on data. `terraform apply` recreates any dro
 Schedule: `5 * * * *` (every hour at :05)
 
 ```
-check_silver_data_arrived   ← short-circuit if no new Silver data in last 2h
-        ↓
-dbt_run                     ← materialize Gold models
-        ↓
-dbt_test                    ← data quality tests
-        ↓
-[daily 02:05 UTC only]
-compact_gcs                 ← merge ~1440 small daily Parquet files into 1
+check_silver_data_arrived
+        │
+        ├── dbt_batch_models      (vessel_activity_summary, port_traffic, anomaly_candidates)
+        ├── dbt_dark_events       ─┐
+        ├── dbt_speed_anomalies   ─┤  parallel
+        └── dbt_loitering         ─┘
+                                   │
+                           dbt_risk_score    (waits for dark + speed + loitering)
+                                   │
+                             dbt_test        (all models)
+                                   │
+                       [daily 02:05 UTC only]
+                             compact_gcs
 ```
 
-**Important design note:** Bronze and Silver Spark jobs run as **continuous Structured Streaming processes** — they are not launched by Airflow. Airflow only orchestrates the downstream Gold materialization. In production, Spark jobs would run on Dataproc; locally they run in dedicated Docker containers.
+**Important design note:** Bronze and Silver Spark jobs run as **continuous Structured Streaming processes** — they are not launched by Airflow. Airflow only orchestrates downstream Gold materialization. In production, Spark jobs would run on Dataproc; locally they run in dedicated Docker containers.
 
 ---
 
