@@ -1,0 +1,96 @@
+.
+├── README.md
+├── api
+│   └── fastapi
+├── docker-compose.yml
+├── docs
+│   └── diagrams
+├── infra
+│   └── terraform
+│       ├── main.tf
+│       ├── marineflow.tfplan
+│       ├── modules
+│       │   ├── bigquery
+│       │   │   ├── main.tf
+│       │   │   ├── output.tf
+│       │   │   └── variables.tf
+│       │   ├── compute
+│       │   │   ├── main.tf
+│       │   │   ├── outputs.tf
+│       │   │   └── variables.tf
+│       │   ├── gcs
+│       │   │   ├── main.tf
+│       │   │   ├── output.tf
+│       │   │   └── variables.tf
+│       │   ├── iam
+│       │   │   ├── main.tf
+│       │   │   ├── output.tf
+│       │   │   └── variables.tf
+│       │   └── pubsub
+│       │       ├── main.tf
+│       │       ├── output.tf
+│       │       └── variables.tf
+│       ├── terraform.tfvars
+│       └── variables.tf
+├── ingestion
+│   ├── ais_producer
+│   │   ├── config.py
+│   │   ├── main.py
+│   │   ├── parser.py
+│   │   ├── producer.py
+│   │   ├── requirements.txt
+│   │   └── test_connection.py
+│   └── simulator
+│       ├── main.py
+│       └── requirements.txt
+├── ml
+│   ├── mlflow
+│   ├── serving
+│   └── training
+├── monitoring
+│   ├── grafana
+│   └── prometheus
+│       └── prometheus.yml
+├── orchestration
+│   └── dags
+│       └── marineflow_pipeline.py
+├── processing
+│   ├── jars
+│   │   ├── gcs-connector-hadoop3-latest.jar
+│   │   └── spark-bigquery-with-dependencies_2.12-0.40.0.jar
+│   └── spark_streaming
+│       ├── bronze_positions.py
+│       ├── diagnose_bronze.py
+│       ├── requirements.txt
+│       ├── silver_metadata.py
+│       └── silver_positions.py
+├── structure.txt
+├── test
+│   ├── MarineFlow.html
+│   ├── comands.txt
+│   └── layers.txt
+└── transformation
+    └── dbt
+        ├── dbt_project.yml
+        ├── macros
+        │   ├── generate_schema_name.sql
+        │   └── safe_divide.sql
+        ├── models
+        │   ├── gold
+        │   │   ├── anomaly_candidates.sql
+        │   │   ├── port_traffic.sql
+        │   │   ├── schema.yml
+        │   │   ├── vessel_activity_summary.sql
+        │   │   ├── vessel_dark_events.sql
+        │   │   ├── vessel_loitering.sql
+        │   │   ├── vessel_risk_score.sql
+        │   │   └── vessel_speed_anomalies.sql
+        │   └── staging
+        │       ├── sources.yml
+        │       └── stg_vessel_positions.sql
+        ├── package-lock.yml
+        ├── packages.yml
+        ├── profiles.yml
+        └── tests
+
+36 directories, 58 files

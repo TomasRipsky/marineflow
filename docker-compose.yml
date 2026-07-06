@@ -1,33 +1,59 @@
 # =============================================================================
 # MARINEFLOW — Docker Compose
 # Local development stack
+#
+# Services:
+#   - spark-bronze              Structured Streaming: GCS pubsub-landing → Bronze
+#   - spark-silver-positions    Structured Streaming: Bronze → Silver positions
+#   - spark-silver-metadata     Structured Streaming: GCS metadata → Silver
+#   - airflow-init              One-shot DB migration + admin user creation
+#   - airflow-webserver         Airflow UI → http://localhost:4080
+#   - airflow-scheduler         Hourly Gold materialization via dbt
+#   - postgres                  Backend for Airflow and MLflow (port 5434)
+#   - redis                     Cache for FastAPI ML predictions
+#   - mlflow                    Experiment tracking → http://localhost:5001
+#   - streamlit                 ML results dashboard → http://localhost:8501
+#   - prometheus                Pipeline metrics → http://localhost:9090
+#   - grafana                   Operational dashboards → http://localhost:3000
+#
+# Auth: all GCP access uses Application Default Credentials (ADC).
+# Service account key files are not used — blocked by org policy.
+# ADC path is read from the ADC_PATH env var (see .env.example).
+#
+# Usage:
+#   cp .env.example .env          # fill in your values
+#   docker compose up -d postgres
+#   docker compose up -d airflow-init && docker compose logs -f airflow-init
+#   docker compose up -d          # bring up everything else
 # =============================================================================
 
 services:
 
   # ---------------------------------------------------------------------------
-  # Spark Bronze — reads from GCS pubsub-landing via Structured Streaming
+  # Spark Bronze — reads from GCS pubsub-landing via Structured Streaming.
   # Each job runs in its own container to avoid concurrent checkpoint conflicts.
+  # Python deps must be installed manually after container start (Phase 5:
+  # custom Dockerfiles will persist deps across container recreations).
   # ---------------------------------------------------------------------------
   spark-bronze:
     image: apache/spark:3.5.0
     container_name: marineflow-spark-bronze
-    entrypoint: ["/bin/sleep", "infinity"]   # keep alive for docker exec
+    entrypoint: ["/bin/sleep", "infinity"]
     environment:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET=${GCS_BUCKET}
       - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
-      - PIPELINE_VERSION=${PIPELINE_VERSION:-0.1.0}
+      - PIPELINE_VERSION=${PIPELINE_VERSION:-1.0.0}
       - SPARK_MASTER=local[2]
     volumes:
       - ./processing:/opt/spark/processing
-      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - ${ADC_PATH}:/tmp/adc.json:ro
     networks:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # Spark Silver Positions — reads from GCS Bronze via Structured Streaming
+  # Spark Silver Positions — Bronze → Silver vessel positions
   # ---------------------------------------------------------------------------
   spark-silver-positions:
     image: apache/spark:3.5.0
@@ -42,12 +68,12 @@ services:
       - SPARK_MASTER=local[2]
     volumes:
       - ./processing:/opt/spark/processing
-      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - ${ADC_PATH}:/tmp/adc.json:ro
     networks:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # Spark Silver Metadata — reads from GCS pubsub-landing/vessel-metadata
+  # Spark Silver Metadata — GCS pubsub-landing/vessel-metadata → Silver
   # ---------------------------------------------------------------------------
   spark-silver-metadata:
     image: apache/spark:3.5.0
@@ -62,12 +88,14 @@ services:
       - SPARK_MASTER=local[2]
     volumes:
       - ./processing:/opt/spark/processing
-      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - ${ADC_PATH}:/tmp/adc.json:ro
     networks:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
   # Airflow — pipeline orchestration
+  # Orchestrates dbt Gold materialization only. Spark Structured Streaming
+  # jobs are long-running processes not managed by Airflow.
   # ---------------------------------------------------------------------------
   airflow-init:
     image: apache/airflow:2.8.1
@@ -104,7 +132,7 @@ services:
     container_name: marineflow-airflow-webserver
     command: webserver
     ports:
-      - "4080:8080"   # Airflow UI → http://localhost:4080
+      - "4080:8080"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://marineflow:marineflow_dev_password@postgres:5432/marineflow
@@ -143,7 +171,7 @@ services:
       - ./orchestration/dags:/opt/airflow/dags
       - ./transformation/dbt:/opt/airflow/dbt
       - airflow-logs:/opt/airflow/logs
-      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - ${ADC_PATH}:/tmp/adc.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -151,7 +179,7 @@ services:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # PostgreSQL — backend for Airflow and MLflow
+  # PostgreSQL — Airflow metadata DB + MLflow backend store (port 5434)
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15
@@ -161,7 +189,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-marineflow_dev_password}
       POSTGRES_DB: ${POSTGRES_DB:-marineflow}
     ports:
-      - "5434:5432"   # avoid conflict with local PostgreSQL on 5432
+      - "5434:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
@@ -173,7 +201,7 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # Redis — cache for FastAPI predictions
+  # Redis — prediction cache for FastAPI serving layer
   # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -189,24 +217,34 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # MLflow — model tracking and registry
+  # MLflow — experiment tracking and model registry
+  #
+  # Auth: uses ADC mounted at /tmp/adc.json via GOOGLE_APPLICATION_CREDENTIALS.
+  # Artifacts stored in GCS under gs://${GCS_BUCKET}/ml/mlflow/
+  # Metadata stored in PostgreSQL.
+  #
+  # NOTE: The original config mounted a service account key file
+  # (./gcp-credentials.json) which is incompatible with the org policy that
+  # blocks SA key creation. Replaced with ADC mount — consistent with all
+  # other services in this stack.
   # ---------------------------------------------------------------------------
   mlflow:
     image: python:3.11-slim
     container_name: marineflow-mlflow
     command: >
-      bash -c "pip install mlflow==2.11.1 psycopg2-binary &&
+      bash -c "pip install mlflow==2.11.1 psycopg2-binary google-cloud-storage &&
                mlflow server
                --backend-store-uri postgresql://marineflow:marineflow_dev_password@postgres:5432/marineflow
-               --default-artifact-root gs://${GCS_BUCKET}/models/mlflow
+               --default-artifact-root gs://${GCS_BUCKET}/ml/mlflow
                --host 0.0.0.0
                --port 5001"
     ports:
       - "5001:5001"
     environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=/opt/gcp-credentials.json
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
     volumes:
-      - ./gcp-credentials.json:/opt/gcp-credentials.json:ro
+      - ${ADC_PATH}:/tmp/adc.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -214,7 +252,33 @@ services:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # Prometheus — pipeline metrics
+  # Streamlit — ML results dashboard
+  # Displays Isolation Forest anomaly scores and XGBoost risk predictions
+  # queried live from BigQuery Gold tables.
+  # UI → http://localhost:8501
+  # ---------------------------------------------------------------------------
+  streamlit:
+    image: python:3.11-slim
+    container_name: marineflow-streamlit
+    command: >
+      bash -c "pip install streamlit==1.32.0 google-cloud-bigquery==3.13.0
+               db-dtypes pandas plotly pyarrow &&
+               streamlit run /app/app.py --server.port=8501 --server.address=0.0.0.0"
+    ports:
+      - "8501:8501"
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET=${GCS_BUCKET}
+    volumes:
+      - ./api/streamlit:/app
+      - ${ADC_PATH}:/tmp/adc.json:ro
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — pipeline and model serving metrics
   # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:latest
