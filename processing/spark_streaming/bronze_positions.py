@@ -23,7 +23,7 @@
 #   2. Extract PositionReport fields with their original names
 #   3. Filter physically impossible coordinates
 #   4. Add partition columns and lineage fields
-#   5. Write to GCS Bronze Parquet (coalesce 1 file per micro-batch)
+#   5. Write to GCS Bronze Parquet
 #
 # Bronze philosophy:
 #   - Zero business transformations — field names match aisstream.io exactly
@@ -47,7 +47,7 @@ load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="🔹 %(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -112,46 +112,6 @@ def get_landing_schema():
             StructField("latitude",    DoubleType(), True),
             StructField("longitude",   DoubleType(), True),
         ]), True),
-    ])
-
-
-# =============================================================================
-# Bronze schema
-# =============================================================================
-
-def get_bronze_schema():
-    """
-    Exact mirror of the aisstream.io PositionReport message structure.
-    Field names match the original JSON keys — no renaming, no transformation.
-    """
-    from pyspark.sql.types import (
-        StructType, StructField,
-        StringType, DoubleType, IntegerType, BooleanType,
-    )
-    return StructType([
-        # Message.PositionReport — from vessel transponder
-        StructField("Cog",                      DoubleType(),  True),
-        StructField("CommunicationState",        IntegerType(), True),
-        StructField("Latitude",                  DoubleType(),  True),
-        StructField("Longitude",                 DoubleType(),  True),
-        StructField("MessageID",                 IntegerType(), True),
-        StructField("NavigationalStatus",        IntegerType(), True),
-        StructField("PositionAccuracy",          BooleanType(), True),
-        StructField("Raim",                      BooleanType(), True),
-        StructField("RateOfTurn",                IntegerType(), True),
-        StructField("RepeatIndicator",           IntegerType(), True),
-        StructField("Sog",                       DoubleType(),  True),
-        StructField("Spare",                     IntegerType(), True),
-        StructField("SpecialManoeuvreIndicator", IntegerType(), True),
-        StructField("Timestamp",                 IntegerType(), True),
-        StructField("TrueHeading",               IntegerType(), True),
-        StructField("UserID",                    IntegerType(), True),
-        StructField("Valid",                     BooleanType(), True),
-        # MetaData — added by aisstream.io
-        StructField("MMSI",                      StringType(),  True),
-        StructField("MMSI_String",               StringType(),  True),
-        StructField("ShipName",                  StringType(),  True),
-        StructField("time_utc",                  StringType(),  True),
     ])
 
 
@@ -264,11 +224,6 @@ def process_micro_batch(df, epoch_id: int):
     validated  = validate(extracted)
     enriched   = add_partition_and_lineage(validated, batch_id)
 
-    record_count = enriched.count()
-    if record_count == 0:
-        logger.info(f"Micro-batch {epoch_id}: no valid PositionReport records")
-        return
-
     # Write partitioned Parquet — one file per micro-batch per partition
     (
         enriched.coalesce(1)
@@ -277,7 +232,7 @@ def process_micro_batch(df, epoch_id: int):
         .partitionBy("partition_date", "partition_hour")
         .parquet(BRONZE_OUTPUT_DIR)
     )
-    logger.info(f"Micro-batch {epoch_id}: wrote {record_count} records to {BRONZE_OUTPUT_DIR}")
+    logger.info(f"Micro-batch {epoch_id} processed successfully.")
 
 
 # =============================================================================
@@ -293,6 +248,13 @@ def create_spark_session():
         .master(os.getenv("SPARK_MASTER", "local[*]"))
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.jars", "/opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar")
+        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped", "true")
+        .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")

@@ -12,7 +12,14 @@ services:
   spark-bronze:
     image: apache/spark:3.5.0
     container_name: marineflow-spark-bronze
-    entrypoint: ["/bin/sleep", "infinity"]   # keep alive for docker exec
+    user: root
+    entrypoint: >
+          /bin/sh -c "
+          if [ -f /opt/spark/processing/spark_streaming/requirements.txt ]; then
+            pip install --no-cache-dir -r /opt/spark/processing/spark_streaming/requirements.txt;
+          fi;
+          /bin/sleep infinity
+          "
     environment:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET=${GCS_BUCKET}
@@ -20,8 +27,12 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
       - PIPELINE_VERSION=${PIPELINE_VERSION:-0.1.0}
       - SPARK_MASTER=local[2]
+      - SPARK_DRIVER_MEMORY=2g
+    ports:
+      - "4040:4040"
     volumes:
       - ./processing:/opt/spark/processing
+      - ./processing/spark-conf/log4j2.properties:/opt/spark/conf/log4j2.properties:ro
       - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
     networks:
       - marineflow-net
