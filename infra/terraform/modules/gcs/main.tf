@@ -68,19 +68,6 @@ resource "google_storage_bucket" "data_lake" {
     }
   }
 
-  # Delete Pub/Sub landing files after 2 days.
-  # Once Bronze checkpoints a file it is no longer needed.
-  # 2 days provides recovery margin if Bronze is down temporarily.
-  lifecycle_rule {
-    action {
-      type = "Delete"
-    }
-    condition {
-      age            = 2
-      matches_prefix = ["pubsub-landing/"]
-    }
-  }
-
   labels = var.labels
 }
 
@@ -111,20 +98,8 @@ resource "google_storage_bucket_object" "checkpoints_prefix" {
   bucket  = google_storage_bucket.data_lake.name
 }
 
-resource "google_storage_bucket_object" "models_prefix" {
-  name    = "models/.keep"
-  content = "marineflow-placeholder"
-  bucket  = google_storage_bucket.data_lake.name
-}
-
 resource "google_storage_bucket_object" "schemas_prefix" {
   name    = "schemas/.keep"
-  content = "marineflow-placeholder"
-  bucket  = google_storage_bucket.data_lake.name
-}
-
-resource "google_storage_bucket_object" "pubsub_landing_prefix" {
-  name    = "pubsub-landing/.keep"
   content = "marineflow-placeholder"
   bucket  = google_storage_bucket.data_lake.name
 }

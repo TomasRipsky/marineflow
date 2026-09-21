@@ -22,19 +22,17 @@ class Config:
     # Filter to the two most data-rich message types
     AIS_MESSAGE_TYPES: list = ["PositionReport", "ShipStaticData"]
 
-    # --- GCP ---
-    GCP_PROJECT_ID: str = os.getenv("GCP_PROJECT_ID", "")
-
-    # --- Pub/Sub Topics ---
-    TOPIC_POSITIONS: str = os.getenv("PUBSUB_TOPIC_POSITIONS", "vessel-positions")
-    TOPIC_METADATA: str = os.getenv("PUBSUB_TOPIC_METADATA", "vessel-metadata")
-    TOPIC_DLQ: str = os.getenv("PUBSUB_TOPIC_DLQ", "dead-letter-queue")
+    # --- Kafka ---
+    KAFKA_BOOTSTRAP_SERVERS: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    TOPIC_POSITIONS: str = os.getenv("KAFKA_TOPIC_POSITIONS", "vessel-positions")
+    TOPIC_METADATA: str = os.getenv("KAFKA_TOPIC_METADATA", "vessel-metadata")
+    TOPIC_DLQ: str = os.getenv("KAFKA_TOPIC_DLQ", "dead-letter-queue")
 
     # --- Producer settings ---
-    # Max messages to batch before flushing to Pub/Sub
-    PUBSUB_BATCH_MAX_MESSAGES: int = int(os.getenv("PUBSUB_BATCH_MAX_MESSAGES", "100"))
-    # Max latency in seconds before flushing a batch
-    PUBSUB_BATCH_MAX_LATENCY: float = float(os.getenv("PUBSUB_BATCH_MAX_LATENCY", "0.5"))
+    # Max messages to batch before flushing to Kafka (librdkafka batch.num.messages)
+    KAFKA_BATCH_MAX_MESSAGES: int = int(os.getenv("KAFKA_BATCH_MAX_MESSAGES", "100"))
+    # Max latency in seconds before flushing a batch (librdkafka linger.ms)
+    KAFKA_BATCH_MAX_LATENCY: float = float(os.getenv("KAFKA_BATCH_MAX_LATENCY", "0.5"))
 
     # --- Logging ---
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -49,8 +47,8 @@ class Config:
         missing = []
         if not cls.AIS_API_KEY:
             missing.append("AIS_API_KEY")
-        if not cls.GCP_PROJECT_ID:
-            missing.append("GCP_PROJECT_ID")
+        if not cls.KAFKA_BOOTSTRAP_SERVERS:
+            missing.append("KAFKA_BOOTSTRAP_SERVERS")
         if missing:
             raise ValueError(
                 f"Missing required environment variables: {', '.join(missing)}"

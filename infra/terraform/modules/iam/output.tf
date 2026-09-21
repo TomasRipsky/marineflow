@@ -8,16 +8,6 @@ output "service_account_email" {
   value       = var.service_account_email
 }
 
-output "pubsub_publisher_binding" {
-  description = "Resource ID of the Pub/Sub publisher IAM binding"
-  value       = google_project_iam_member.pubsub_publisher.id
-}
-
-output "pubsub_subscriber_binding" {
-  description = "Resource ID of the Pub/Sub subscriber IAM binding"
-  value       = google_project_iam_member.pubsub_subscriber.id
-}
-
 output "storage_object_admin_binding" {
   description = "Resource ID of the Storage object admin IAM binding"
   value       = google_project_iam_member.storage_object_admin.id

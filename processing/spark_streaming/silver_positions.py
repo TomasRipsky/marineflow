@@ -38,20 +38,28 @@
 #     silver_positions.py
 # =============================================================================
 
-import logging
 import os
 import sys
+import time
 import uuid
 
+import structlog
 from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+import logging as _stdlib_logging
+_stdlib_logging.getLogger("py4j").setLevel(_stdlib_logging.WARNING)
+
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True),
+        structlog.processors.add_log_level,
+        structlog.dev.ConsoleRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(_stdlib_logging.INFO),
 )
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger("silver_positions")
 
 # =============================================================================
 # Configuration
@@ -61,11 +69,14 @@ GCP_PROJECT_ID    = os.getenv("GCP_PROJECT_ID", "")
 GCS_BUCKET        = os.getenv("GCS_BUCKET", "")
 BQ_DATASET_SILVER = os.getenv("BQ_DATASET_SILVER", "marineflow_silver")
 
-BRONZE_INPUT_DIR  = f"gs://{GCS_BUCKET}/bronze/vessel_positions"
-SILVER_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_positions"
-CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_positions"
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+KAFKA_TOPIC_POSITIONS_BRONZE = os.getenv("KAFKA_TOPIC_POSITIONS_BRONZE", "vessel-positions-bronze")
+KAFKA_STARTING_OFFSETS = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
 
-MAX_FILES_PER_TRIGGER = int(os.getenv("SILVER_MAX_FILES_PER_TRIGGER", "5"))
+SILVER_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_positions"
+CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_positions_kafka"
+
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("SILVER_MAX_OFFSETS_PER_TRIGGER", "1000"))
 
 # =============================================================================
 # Reference data
@@ -347,7 +358,9 @@ def process_micro_batch(df, epoch_id: int):
     from pyspark.sql import functions as F
 
     silver_batch_id = str(uuid.uuid4())[:8]
-    logger.info(f"Processing Silver micro-batch epoch={epoch_id} batch_id={silver_batch_id}")
+    t0 = time.monotonic()
+    raw_count = df.count()
+    logger.info("▶ micro-batch started", epoch=epoch_id, batch_id=silver_batch_id, rows_read=raw_count)
 
     silver_df = transform_to_silver(df)
     silver_df = silver_df.withColumns({
@@ -357,7 +370,7 @@ def process_micro_batch(df, epoch_id: int):
 
     record_count = silver_df.count()
     if record_count == 0:
-        logger.info(f"Micro-batch {epoch_id}: no records after transformation")
+        logger.info("⏳ idle — no records after transformation", epoch=epoch_id, rows_read=raw_count)
         return
 
     (
@@ -367,7 +380,12 @@ def process_micro_batch(df, epoch_id: int):
         .partitionBy("partition_date")
         .parquet(SILVER_OUTPUT_DIR)
     )
-    logger.info(f"Micro-batch {epoch_id}: wrote {record_count} records to {SILVER_OUTPUT_DIR}")
+    logger.info(
+        "✅ micro-batch complete",
+        epoch=epoch_id, batch_id=silver_batch_id,
+        rows_read=raw_count, rows_written=record_count,
+        duration_ms=int((time.monotonic() - t0) * 1000),
+    )
 
 
 # =============================================================================
@@ -383,6 +401,7 @@ def create_spark_session():
         .master(os.getenv("SPARK_MASTER", "local[*]"))
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.jars.ivy", "/opt/spark/.ivy2")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -396,41 +415,52 @@ def create_spark_session():
 def validate_config() -> None:
     missing = [v for v in ["GCP_PROJECT_ID", "GCS_BUCKET"] if not os.getenv(v)]
     if missing:
-        logger.error(f"Missing required env vars: {missing}")
+        logger.error("✗ missing required environment variables", missing=missing)
         sys.exit(1)
 
 
 def main() -> None:
     validate_config()
 
-    logger.info("Starting MarineFlow Silver Positions job")
-    logger.info(f"Input:      {BRONZE_INPUT_DIR}")
-    logger.info(f"Output:     {SILVER_OUTPUT_DIR}")
-    logger.info(f"Checkpoint: {CHECKPOINT_DIR}")
+    logger.info(
+        "🚀 starting MarineFlow Silver Positions job",
+        kafka_topic=KAFKA_TOPIC_POSITIONS_BRONZE,
+        silver_output=SILVER_OUTPUT_DIR,
+        checkpoint=CHECKPOINT_DIR,
+        trigger_interval="30 seconds",
+    )
 
     spark = create_spark_session()
 
-    # Read new Bronze Parquet files as they arrive.
-    # Spark tracks processed files via checkpointing — no manual filtering needed.
-    # Schema must be specified explicitly for streaming sources.
-    bronze_stream = (
+    from pyspark.sql import functions as F
+
+    kafka_raw = (
         spark.readStream
-        .format("parquet")
-        .schema(get_bronze_schema())
-        .option("path", BRONZE_INPUT_DIR)
-        .option("maxFilesPerTrigger", MAX_FILES_PER_TRIGGER)
-        .option("latestFirst", "false")
-        .option("recursiveFileLookup", "true")
+        .format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
+        .option("subscribe", KAFKA_TOPIC_POSITIONS_BRONZE)
+        .option("startingOffsets", KAFKA_STARTING_OFFSETS)
+        .option("maxOffsetsPerTrigger", MAX_OFFSETS_PER_TRIGGER)
+        .option("failOnDataLoss", "false")
         .load()
+    )
+
+    bronze_stream = (
+        kafka_raw
+        .selectExpr("CAST(value AS STRING) AS json_value")
+        .select(F.from_json(F.col("json_value"), get_bronze_schema()).alias("data"))
+        .select("data.*")
     )
 
     query = (
         bronze_stream.writeStream
         .foreachBatch(process_micro_batch)
         .option("checkpointLocation", CHECKPOINT_DIR)
-        .trigger(processingTime="60 seconds")
+        .trigger(processingTime="30 seconds")
         .start()
     )
+
+    logger.info("👂 listening on Kafka — one cycle every 30s")
 
     try:
         query.awaitTermination()

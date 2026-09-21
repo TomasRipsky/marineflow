@@ -2,7 +2,7 @@
 # MARINEFLOW — AIS Simulator
 # ingestion/simulator/main.py
 #
-# Generates realistic synthetic AIS data and publishes it to Pub/Sub.
+# Generates realistic synthetic AIS data and publishes it to Kafka.
 # Used for local development and testing without consuming AIS API quota.
 #
 # Simulates a fleet of vessels moving along realistic maritime routes.
@@ -26,7 +26,7 @@ from typing import Optional
 import structlog
 from dotenv import load_dotenv
 from faker import Faker
-from google.cloud import pubsub_v1
+from confluent_kafka import Producer
 
 load_dotenv()
 
@@ -37,9 +37,9 @@ fake = Faker()
 # Configuration
 # =============================================================================
 
-GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "")
-TOPIC_POSITIONS = os.getenv("PUBSUB_TOPIC_POSITIONS", "vessel-positions")
-TOPIC_METADATA = os.getenv("PUBSUB_TOPIC_METADATA", "vessel-metadata")
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+TOPIC_POSITIONS = os.getenv("KAFKA_TOPIC_POSITIONS", "vessel-positions")
+TOPIC_METADATA = os.getenv("KAFKA_TOPIC_METADATA", "vessel-metadata")
 
 # =============================================================================
 # Realistic maritime routes (start_lat, start_lon, end_lat, end_lon, name)
@@ -196,18 +196,17 @@ async def run_simulator(num_vessels: int, interval: float) -> None:
     Main simulation loop — creates a fleet of vessels and publishes
     their positions to Pub/Sub at the specified interval.
     """
-    if not GCP_PROJECT_ID:
-        logger.error("missing_gcp_project_id")
+    if not KAFKA_BOOTSTRAP_SERVERS:
+        logger.error("missing_kafka_bootstrap_servers")
         sys.exit(1)
 
-    # Initialize Pub/Sub publisher
-    batch_settings = pubsub_v1.types.BatchSettings(
-        max_messages=500,
-        max_latency=1.0,
-    )
-    client = pubsub_v1.PublisherClient(batch_settings=batch_settings)
-    positions_topic = client.topic_path(GCP_PROJECT_ID, TOPIC_POSITIONS)
-    metadata_topic = client.topic_path(GCP_PROJECT_ID, TOPIC_METADATA)
+    # Initialize Kafka producer
+    producer = Producer({
+        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+        "linger.ms": 1000,
+        "batch.num.messages": 500,
+        "compression.type": "snappy",
+    })
 
     # Create the fleet
     fleet = [SimulatedVessel(i) for i in range(num_vessels)]
@@ -216,7 +215,8 @@ async def run_simulator(num_vessels: int, interval: float) -> None:
     # Publish initial metadata for all vessels
     for vessel in fleet:
         payload = json.dumps(vessel.to_metadata_message()).encode("utf-8")
-        client.publish(metadata_topic, payload)
+        producer.produce(TOPIC_METADATA, key=vessel.mmsi.encode("utf-8"), value=payload)
+    producer.poll(0)
     logger.info("initial_metadata_published", vessels=num_vessels)
 
     tick_count = 0
@@ -225,7 +225,8 @@ async def run_simulator(num_vessels: int, interval: float) -> None:
             for vessel in fleet:
                 vessel.tick(interval)
                 payload = json.dumps(vessel.to_position_message()).encode("utf-8")
-                client.publish(positions_topic, payload)
+                producer.produce(TOPIC_POSITIONS, key=vessel.mmsi.encode("utf-8"), value=payload)
+            producer.poll(0)
 
             tick_count += 1
             if tick_count % 10 == 0:
@@ -239,7 +240,7 @@ async def run_simulator(num_vessels: int, interval: float) -> None:
             await asyncio.sleep(interval)
 
     except asyncio.CancelledError:
-        client.stop()
+        producer.flush(timeout=10)
         logger.info("simulator_stopped", total_ticks=tick_count)
 
 

@@ -35,25 +35,12 @@ resource "google_bigquery_dataset" "silver" {
 resource "google_bigquery_dataset" "gold" {
   dataset_id                  = "marineflow_gold"
   friendly_name               = "MarineFlow — Gold Layer"
-  description                 = "Optimized analytical tables, dbt models and ML feature outputs"
+  description                 = "Optimized analytical tables and dbt models"
   location                    = var.bq_location
   project                     = var.project_id
   default_table_expiration_ms = null
 
   labels = merge(var.labels, { layer = "gold" })
-
-  delete_contents_on_destroy = true
-}
-
-resource "google_bigquery_dataset" "ml_features" {
-  dataset_id                  = "marineflow_features"
-  friendly_name               = "MarineFlow — ML Feature Store"
-  description                 = "Computed features for model training and real-time serving"
-  location                    = var.bq_location
-  project                     = var.project_id
-  default_table_expiration_ms = null
-
-  labels = merge(var.labels, { layer = "ml" })
 
   delete_contents_on_destroy = true
 }
@@ -122,6 +109,54 @@ resource "google_bigquery_table" "vessel_positions_raw" {
       { name = "_pipeline_version",         type = "STRING",    mode = "NULLABLE" },
       { name = "_ingestion_date",           type = "DATE",      mode = "NULLABLE" },
       { name = "_source_file",              type = "STRING",    mode = "NULLABLE" }
+    ])
+  }
+}
+
+# -----------------------------------------------------------------------------
+# External Table Bronze: vessel_metadata_raw
+#
+# Reads directly from GCS Parquet, written by bronze_metadata.py.
+# -----------------------------------------------------------------------------
+resource "google_bigquery_table" "vessel_metadata_raw" {
+  dataset_id          = google_bigquery_dataset.bronze.dataset_id
+  table_id            = "vessel_metadata_raw"
+  project             = var.project_id
+  deletion_protection = false
+
+  description = "External table — reads raw ShipStaticData Parquet directly from GCS. Source of truth is GCS, not BigQuery."
+
+  labels = merge(var.labels, { layer = "bronze", entity = "vessel_metadata", type = "external" })
+
+  external_data_configuration {
+    source_format    = "PARQUET"
+    autodetect       = false
+    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_metadata/*"]
+
+    hive_partitioning_options {
+      mode                     = "AUTO"
+      source_uri_prefix        = "gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_metadata/"
+      require_partition_filter = false
+    }
+
+    parquet_options {
+      enable_list_inference = true
+    }
+
+    schema = jsonencode([
+      { name = "MMSI",                 type = "STRING",    mode = "NULLABLE", description = "MMSI as string" },
+      { name = "ShipName",             type = "STRING",    mode = "NULLABLE" },
+      { name = "Type",                 type = "INTEGER",   mode = "NULLABLE", description = "Raw AIS ship type code" },
+      { name = "ImoNumber",            type = "INTEGER",   mode = "NULLABLE" },
+      { name = "Callsign",             type = "STRING",    mode = "NULLABLE" },
+      { name = "Name",                 type = "STRING",    mode = "NULLABLE" },
+      { name = "Destination",          type = "STRING",    mode = "NULLABLE" },
+      { name = "MaximumStaticDraught", type = "FLOAT64",   mode = "NULLABLE" },
+      # --- Pipeline metadata ---
+      { name = "ingestion_timestamp",  type = "TIMESTAMP", mode = "NULLABLE" },
+      { name = "_source_system",       type = "STRING",    mode = "NULLABLE" },
+      { name = "_batch_id",            type = "STRING",    mode = "NULLABLE" },
+      { name = "_pipeline_version",    type = "STRING",    mode = "NULLABLE" }
     ])
   }
 }

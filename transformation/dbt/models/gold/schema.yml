@@ -8,7 +8,6 @@ models:
   - name: vessel_activity_summary
     description: >
       Daily activity summary per vessel. Grain: one row per (mmsi, date_day).
-      Primary input for the activity classifier and ETA predictor ML models.
     columns:
       - name: mmsi
         description: "Vessel MMSI"

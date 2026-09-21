@@ -3,6 +3,13 @@
 # processing/spark_streaming/requirements.txt
 # =============================================================================
 
+# PySpark (the apache/spark base image includes the Spark runtime/JVM but not
+# always the pyspark Python package used by pip-level imports)
+pyspark==3.5.0
+
+# GCS client — used outside the Hadoop connector (diagnostics, checks)
+google-cloud-storage==2.16.0
+
 # Environment variable management
 python-dotenv==1.0.1
 

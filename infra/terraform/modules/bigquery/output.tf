@@ -7,10 +7,9 @@
 output "dataset_ids" {
   description = "Map of all dataset layer names to their BigQuery dataset IDs"
   value = {
-    bronze   = google_bigquery_dataset.bronze.dataset_id
-    silver   = google_bigquery_dataset.silver.dataset_id
-    gold     = google_bigquery_dataset.gold.dataset_id
-    features = google_bigquery_dataset.ml_features.dataset_id
+    bronze = google_bigquery_dataset.bronze.dataset_id
+    silver = google_bigquery_dataset.silver.dataset_id
+    gold   = google_bigquery_dataset.gold.dataset_id
   }
 }
 
@@ -29,11 +28,6 @@ output "gold_dataset_id" {
   value       = google_bigquery_dataset.gold.dataset_id
 }
 
-output "features_dataset_id" {
-  description = "BigQuery dataset ID for the ML Feature Store"
-  value       = google_bigquery_dataset.ml_features.dataset_id
-}
-
 # --- External Table URIs (Bronze + Silver — source of truth is GCS) ---
 
 output "vessel_positions_raw_table" {
@@ -44,6 +38,11 @@ output "vessel_positions_raw_table" {
 output "vessel_positions_clean_table" {
   description = "Fully qualified external table ID for vessel_positions_clean"
   value       = "${var.project_id}.${google_bigquery_dataset.silver.dataset_id}.${google_bigquery_table.vessel_positions_clean.table_id}"
+}
+
+output "vessel_metadata_raw_table" {
+  description = "Fully qualified external table ID for vessel_metadata_raw"
+  value       = "${var.project_id}.${google_bigquery_dataset.bronze.dataset_id}.${google_bigquery_table.vessel_metadata_raw.table_id}"
 }
 
 output "vessel_metadata_table" {

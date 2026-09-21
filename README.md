@@ -17,13 +17,12 @@ MarineFlow is an end-to-end data engineering portfolio project that processes AI
    - [Phase 1 — AIS Ingestion](#phase-1--ais-ingestion)
    - [Phase 2 — Spark Bronze Layer](#phase-2--spark-bronze-layer)
    - [Phase 3 — Silver, Gold, dbt & Airflow](#phase-3--silver-gold-dbt--airflow)
-   - [Phase 4 — ML Models](#phase-4--ml-models) *(pending)*
-   - [Phase 5 — API & Dashboard](#phase-5--api--dashboard) *(pending)*
-6. [GCP Infrastructure (Terraform)](#gcp-infrastructure-terraform)
-7. [Local Setup](#local-setup)
-8. [Design Decisions](#design-decisions)
-9. [Known Limitations](#known-limitations)
-10. [How to Run](#how-to-run)
+   - [Phase 4 — API & Dashboard](#phase-4--api--dashboard) *(pending)*
+5. [GCP Infrastructure (Terraform)](#gcp-infrastructure-terraform)
+6. [Local Setup](#local-setup)
+7. [Design Decisions](#design-decisions)
+8. [Known Limitations](#known-limitations)
+9. [How to Run](#how-to-run)
 
 ---
 
@@ -48,18 +47,14 @@ This generates a continuous global stream of hundreds of thousands of messages p
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                              INGESTION                                    │
 │                                                                           │
-│  aisstream.io WebSocket ──► AIS Producer (Python)  ──► Pub/Sub topics   │
-│  (live global AIS feed)      Compute Engine e2-micro   vessel-positions  │
-│                              systemd service            vessel-metadata   │
-│                              auto-restart on failure                      │
+│  aisstream.io WebSocket ──► AIS Producer (Python)  ──► Kafka topics     │
+│  (live global AIS feed)      local process (venv)       vessel-positions │
+│                                                           vessel-metadata │
 └──────────────────────────────┬───────────────────────────────────────────┘
                                │
-              GCP Cloud Storage Subscriptions
-              (GCP writes JSON files automatically — no code)
-                               │
-              pubsub-landing/vessel-positions/*.json
-              pubsub-landing/vessel-metadata/*.json
-              (auto-deleted after 2 days via GCS lifecycle)
+              Kafka (local, KRaft mode, Docker)
+              spark-sql-kafka native connector — push-based, no
+              file-polling, no GCS landing zone
                                │
 ┌──────────────────────────────▼───────────────────────────────────────────┐
 │               PROCESSING (Spark Structured Streaming)                     │
@@ -91,13 +86,9 @@ This generates a continuous global stream of hundreds of thousands of messages p
 └──────────────────────────────┬───────────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼───────────────────────────────────────────┐
-│                           ML + SERVING                                    │
+│                              SERVING                                      │
 │                                                                           │
-│  MLflow ──► Anomaly Detector (Isolation Forest)       [Phase 4]          │
-│         ──► Activity Classifier (XGBoost)             [Phase 4]          │
-│         ──► ETA Predictor (LSTM)                      [Phase 4]          │
-│                                                                           │
-│  FastAPI + Redis ──► Cloud Run ──► Dashboard WebSocket [Phase 5]         │
+│  FastAPI ──► Cloud Run ──► Dashboard WebSocket          [Phase 4]        │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -107,9 +98,8 @@ This generates a continuous global stream of hundreds of thousands of messages p
 
 | Layer | Technology | Why |
 |-------|-----------|-----|
-| **Producer** | Compute Engine e2-micro + systemd | WebSocket long-lived connections require no TCP idle timeouts — VM is the right tool vs Cloud Run/Functions |
-| **Messaging** | Google Cloud Pub/Sub | Managed, native GCP integration |
-| **Landing** | GCS Cloud Storage Subscriptions | GCP writes Pub/Sub messages to GCS automatically — zero ingestion code in Spark |
+| **Producer** | Python, local process | Runs locally alongside Kafka/Spark (Compute Engine VM removed after the Kafka migration) |
+| **Messaging** | Apache Kafka (KRaft, local Docker) | Native `spark-sql-kafka` connector — push-based streaming, no landing zone or file-polling latency |
 | **Processing** | Apache Spark 3.5 — Structured Streaming | True streaming with checkpointing, exactly-once semantics |
 | **Lakehouse** | GCS Parquet + BigQuery External Tables | GCS as single source of truth, BQ reads directly |
 | **Transformations** | dbt 1.8 | Versioned SQL, automatic lineage, data quality tests |
@@ -125,9 +115,9 @@ This generates a continuous global stream of hundreds of thousands of messages p
 ```
 marineflow/
 ├── ingestion/
-│   ├── ais_producer/           # Live WebSocket producer → Pub/Sub
+│   ├── ais_producer/           # Live WebSocket producer → Kafka
 │   │   ├── main.py             # Infinite retry, graceful shutdown
-│   │   ├── producer.py         # PubSubPublisher with batching and DLQ
+│   │   ├── producer.py         # KafkaPublisher (confluent-kafka), keyed by mmsi
 │   │   ├── parser.py           # Minimal: validate, normalize timestamp, route
 │   │   ├── config.py           # Env var configuration
 │   │   ├── Dockerfile          # For local development
@@ -138,10 +128,12 @@ marineflow/
 │       └── requirements.txt
 │
 ├── processing/
+│   ├── Dockerfile               # Custom Spark image (deps baked in at build)
 │   └── spark_streaming/
-│       ├── bronze_positions.py  # GCS landing → Bronze (Structured Streaming)
-│       ├── silver_positions.py  # Bronze → Silver (Structured Streaming)
-│       ├── silver_metadata.py   # GCS landing → Silver metadata
+│       ├── bronze_positions.py  # Kafka → Bronze (GCS + Kafka bronze topic)
+│       ├── silver_positions.py  # Kafka bronze topic → Silver
+│       ├── bronze_metadata.py   # Kafka → Bronze (GCS + Kafka bronze topic)
+│       ├── silver_metadata.py   # Kafka bronze topic → Silver
 │       └── requirements.txt
 │
 ├── transformation/
@@ -172,16 +164,14 @@ marineflow/
 │       ├── outputs.tf
 │       └── modules/
 │           ├── gcs/        # Buckets + lifecycle policies
-│           ├── pubsub/     # Topics + Cloud Storage subscriptions
 │           ├── bigquery/   # Datasets + external + Gold tables
-│           ├── compute/    # e2-micro VM for AIS producer
 │           └── iam/        # Service account and roles
 │
 ├── monitoring/
 │   └── prometheus/
 │       └── prometheus.yml
 │
-├── docker-compose.yml      # Spark (3 containers) + Airflow + Postgres + Redis
+├── docker-compose.yml      # Spark (3 containers) + Airflow + Postgres
 ├── .env
 └── README.md
 ```
@@ -194,35 +184,30 @@ marineflow/
 
 **Status: ✅ Complete**
 
-The AIS Producer runs as a **systemd service on a Compute Engine e2-micro VM** — not in Cloud Run or Cloud Functions. This is an intentional design decision: WebSocket connections require no TCP idle timeouts. Cloud Run kills idle TCP connections after ~10 minutes regardless of WebSocket ping configuration. A VM has no such constraint.
+The AIS Producer runs as a **local process** (`python main.py` in a venv), publishing directly to a local Kafka broker. It previously ran as a systemd service on a Compute Engine e2-micro VM publishing to Pub/Sub — that infrastructure (`infra/terraform/modules/compute/`) was removed once the Kafka migration made it obsolete. It can be reintroduced later if the pipeline moves off a fully local setup.
 
 - `parser.py`: validates coordinates, normalizes ISO 8601 timestamp, routes `PositionReport` → `vessel-positions` and `ShipStaticData` → `vessel-metadata`. Publishes raw AIS JSON — zero transformation.
-- `producer.py`: batching, DLQ for failed messages.
+- `producer.py`: `confluent-kafka` producer, messages keyed by `mmsi` (same-vessel messages land on the same partition, preserving per-vessel order downstream), DLQ topic for failed messages.
 - `main.py`: **infinite retry** with exponential backoff (2s → 60s) — WebSocket disconnections are expected and handled transparently.
 
-**Starting/stopping the VM:**
-```powershell
-# Stop (no VM charges while stopped, only disk ~$0.04/mo)
-gcloud compute instances stop marineflow-ais-producer --zone=us-central1-a --project=marineflow-489815
-
-# Start (systemd auto-starts the producer on boot)
-gcloud compute instances start marineflow-ais-producer --zone=us-central1-a --project=marineflow-489815
+**Running the producer:**
+```bash
+cd ingestion/ais_producer && python main.py
 ```
 
-**Viewing logs:**
-```powershell
-gcloud compute ssh marineflow-ais-producer --zone=us-central1-a --project=marineflow-489815 --tunnel-through-iap --command="sudo journalctl -u ais-producer -f"
-```
+#### Kafka Topics
 
-#### Pub/Sub Topics + Cloud Storage Subscriptions
+| Topic | Content |
+|-------|---------|
+| `vessel-positions` | Raw PositionReport (producer output) |
+| `vessel-positions-bronze` | Flattened Bronze rows (Bronze output → Silver input) |
+| `vessel-metadata` | Raw ShipStaticData (producer output) |
+| `vessel-metadata-bronze` | Flattened Bronze rows (Bronze output → Silver input) |
+| `dead-letter-queue` | Failed messages |
 
-| Topic | Content | GCS Landing Path |
-|-------|---------|-----------------|
-| `vessel-positions` | PositionReport | `pubsub-landing/vessel-positions/` |
-| `vessel-metadata` | ShipStaticData | `pubsub-landing/vessel-metadata/` |
-| `dead-letter-queue` | Failed messages | *(monitoring)* |
+Bronze reads the raw topic, writes to GCS (permanent archive) **and** to its `-bronze` topic; Silver reads the `-bronze` topic directly — Kafka carries the stream end-to-end between layers, GCS is Bronze's durable record, not Silver's input.
 
-GCS subscription writes each message as a JSON file automatically. Files auto-delete after 2 days via lifecycle policy.
+Local single-broker Kafka (KRaft mode, no Zookeeper) via Docker Compose — see `docker-compose.yml`. Spark reads these topics directly with the native `spark-sql-kafka` connector, no landing zone in between.
 
 ---
 
@@ -230,13 +215,13 @@ GCS subscription writes each message as a JSON file automatically. Files auto-de
 
 **Status: ✅ Complete**
 
-Bronze reads from `pubsub-landing/` using Structured Streaming — detects new JSON files automatically via checkpoint.
+Bronze reads from the `vessel-positions` Kafka topic using Structured Streaming's native Kafka source — push-based, no file polling.
 
 ```
-pubsub-landing/vessel-positions/*.json
+Kafka topic vessel-positions
   {"Message": {"PositionReport": {...}}, "MessageType": "...", "MetaData": {...}}
         │
-  spark.readStream (new files detected automatically)
+  spark.readStream.format("kafka") — push-based, native connector
         │
   extract_fields()           — flatten nested JSON, PositionReport only
   validate()                 — reject impossible lat/lon, null MMSI
@@ -270,7 +255,7 @@ Reads Bronze Parquet via Structured Streaming. Transformations:
 
 #### Silver Metadata
 
-Reads `pubsub-landing/vessel-metadata/` via Structured Streaming. Normalizes `vessel_type` (AIS int → category), `destination_clean`, `flag_country`.
+Reads the `vessel-metadata` Kafka topic directly via Structured Streaming. Normalizes `vessel_type` (AIS int → category), `destination_clean`, `flag_country`.
 
 #### External Tables — GCS as single source of truth
 
@@ -357,22 +342,11 @@ check_silver_data_arrived
 
 ---
 
-### Phase 4 — ML Models
+### Phase 4 — API & Dashboard
 
 **Status: ⏳ Pending**
 
-Three models tracked with MLflow:
-- **Anomaly Detector (Isolation Forest)** — continuous anomaly score from `anomaly_candidates`
-- **Activity Classifier (XGBoost)** — vessel state: in_transit, fishing, anchored, port_manoeuvre
-- **ETA Predictor (LSTM)** — time of arrival prediction from position sequences
-
----
-
-### Phase 5 — API & Dashboard
-
-**Status: ⏳ Pending**
-
-FastAPI + WebSockets, Redis cache, world map dashboard, Cloud Run Service, Prometheus + Grafana.
+FastAPI + WebSockets, world map dashboard, Cloud Run Service, Prometheus + Grafana.
 
 ---
 
@@ -384,32 +358,17 @@ FastAPI + WebSockets, Redis cache, world map dashboard, Cloud Run Service, Prome
 
 **GCS** (`modules/gcs/`):
 - `marineflow-lake-{project}` with lifecycle:
-  - `pubsub-landing/` → deleted after 2 days
   - All data → Nearline 30d, Coldline 90d
 
-**Pub/Sub** (`modules/pubsub/`):
-- 5 topics + pull subscriptions
-- 2 Cloud Storage subscriptions (`vessel-positions-gcs-sub`, `vessel-metadata-gcs-sub`)
-- IAM: Pub/Sub SA → `Storage Object Creator` + `Storage Legacy Bucket Reader`
-
-**Compute** (`modules/compute/`):
-- `marineflow-ais-producer` — e2-micro VM, Debian 12
-- systemd service auto-starts producer on boot
-- API key injected from Secret Manager at startup
-- SSH access via IAP tunnel only (no direct internet exposure)
-- Free tier eligible (1 e2-micro/month in us-* regions)
+**Kafka**: local only (Docker Compose, KRaft mode) — not provisioned by Terraform. Replaced the `pubsub` Terraform module, which was removed.
 
 **BigQuery** (`modules/bigquery/`):
 - `marineflow_bronze` — external table `vessel_positions_raw`
 - `marineflow_silver` — external tables `vessel_positions_clean`, `vessel_metadata`
 - `marineflow_gold` — native tables managed by dbt
-- `marineflow_features` — ML Feature Store (Phase 4)
 
 **IAM** (`modules/iam/`):
 - `marineflow-sa` with minimum required roles
-
-**Secret Manager:**
-- `ais-api-key` — aisstream.io API key, injected into VM at boot
 
 ---
 
@@ -422,7 +381,7 @@ FastAPI + WebSockets, Redis cache, world map dashboard, Cloud Run Service, Prome
 | Python | 3.11 | Producer (local dev), simulator |
 | Java | 17+ | Spark (JVM) |
 | Docker Desktop | 29+ | Spark containers + Airflow |
-| gcloud CLI | 372+ | Auth, GCP operations, VM SSH |
+| gcloud CLI | 372+ | Auth, GCP operations |
 | Terraform | 1.5+ | Infrastructure |
 | dbt-bigquery | 1.8.2 | Gold transformations |
 
@@ -435,15 +394,16 @@ GCS_BUCKET=marineflow-lake-marineflow-489815
 GOOGLE_CLOUD_PROJECT=marineflow-489815
 
 # ADC — mounted into Spark containers by Docker Compose
-ADC_PATH=C:\Users\usuario\AppData\Roaming\gcloud\application_default_credentials.json
+ADC_PATH=/Users/<your_user>/.config/gcloud/application_default_credentials.json
 
-# AIS (local producer only — VM uses Secret Manager)
+# AIS
 AIS_API_KEY=<your aisstream.io key>
 
-# Pub/Sub
-PUBSUB_TOPIC_POSITIONS=vessel-positions
-PUBSUB_TOPIC_METADATA=vessel-metadata
-PUBSUB_TOPIC_DLQ=dead-letter-queue
+# Kafka (local broker via Docker Compose)
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_TOPIC_POSITIONS=vessel-positions
+KAFKA_TOPIC_METADATA=vessel-metadata
+KAFKA_TOPIC_DLQ=dead-letter-queue
 
 # Pipeline
 PIPELINE_VERSION=0.1.0
@@ -462,23 +422,20 @@ POSTGRES_DB=marineflow
 |---------|------|-----|
 | Airflow UI | 4080 | http://localhost:4080 (admin/admin) |
 | PostgreSQL | 5434 | localhost:5434 |
-| MLflow | 5001 | http://localhost:5001 |
 | Grafana | 3000 | http://localhost:3000 |
 | Prometheus | 9090 | http://localhost:9090 |
-
-> **Windows / Hyper-V**: ports 8064–8763 are reserved. All service ports are assigned below 8064.
 
 ---
 
 ## Design Decisions
 
-### VM for the AIS Producer, not Cloud Run
+### Kafka instead of Pub/Sub + GCS Cloud Storage Subscriptions
 
-Cloud Run Jobs and Cloud Functions have TCP idle timeouts (~10 min) that kill WebSocket connections regardless of `ping_interval`. A Compute Engine e2-micro has no such constraint, costs ~$0/month on the free tier, and systemd provides robust process management with automatic restart on failure.
+The original design used Pub/Sub with a Cloud Storage Subscription writing JSON files to a GCS landing zone, which Spark then read via its file-source streaming connector (poll-based). In practice this meant real latency between a message being published and a file actually being visible to Spark, plus an extra hop and small-files overhead. Spark's native `spark-sql-kafka` connector is push-based streaming against Kafka directly — no landing zone, no polling. Kafka runs locally (KRaft mode, Docker) alongside Spark. The `infra/terraform/modules/pubsub/` module was removed; Bronze/Silver-metadata now read Kafka topics directly (see Phase 1/2 above).
 
-### Pub/Sub → GCS via Cloud Storage Subscriptions
+### VM for the AIS Producer — historical, removed
 
-GCP writes messages directly to GCS as JSON files — no pull loop, no manual ack, no race conditions in Spark. Eliminates the most fragile part of the original design.
+The original design ran the producer as a systemd service on a Compute Engine e2-micro VM (rationale: Cloud Run/Functions kill idle WebSocket connections after ~10 min; a VM doesn't). Since the migration to a local-only Kafka broker, the producer runs as a local process instead — a remote VM can't reach a broker that only exists on localhost. `infra/terraform/modules/compute/` was removed; the same rationale would apply again if the pipeline ever moves off a fully local setup.
 
 ### Structured Streaming + Checkpointing
 
@@ -504,9 +461,9 @@ These fields come from `ShipStaticData`, not `PositionReport`. Storing them as n
 
 ## Known Limitations
 
-### Python dependencies not persisted in Docker
+### ~~Python dependencies not persisted in Docker~~ — resolved
 
-`pip install` in Spark and Airflow containers is lost on container recreation. Phase 5 will resolve this with custom Dockerfiles baked into the images.
+Spark (`processing/Dockerfile`) and the Airflow scheduler (`orchestration/Dockerfile`) now bake their Python deps in at build time. `docker compose up --build` is enough — no more manual `docker exec pip install` after recreating containers.
 
 ### Spark in local mode
 
@@ -529,7 +486,7 @@ Service without guaranteed SLA. Infinite retry with exponential backoff handles 
 ```bash
 git clone <repo-url>
 cd marineflow
-python -m venv venv
+python3.11 -m venv venv      # pydantic-core (2.6.4) has no prebuilt wheel beyond 3.11/3.12 — pin the version
 source venv/bin/activate      # Windows: .\venv\Scripts\Activate.ps1
 cp .env.example .env
 
@@ -540,7 +497,7 @@ gcloud auth application-default set-quota-project marineflow-489815
 
 ### 2. GCP Infrastructure
 
-```powershell
+```bash
 cd infra/terraform
 terraform init
 terraform plan
@@ -552,81 +509,49 @@ echo -n "YOUR_AIS_API_KEY" | gcloud secrets versions add ais-api-key --data-file
 
 ### 3. Start Docker stack
 
-```powershell
-# Spark containers
-docker compose up spark-bronze spark-silver-positions spark-silver-metadata -d
+```bash
+# Spark containers (builds processing/Dockerfile the first time, cached after)
+docker compose up spark-bronze spark-bronze-metadata spark-silver-positions spark-silver-metadata -d --build
 
-# Airflow
-docker compose up postgres airflow-webserver airflow-scheduler -d
-
-# Install deps in Spark containers
-docker exec -u root marineflow-spark-bronze pip install pyspark==3.5.0 google-cloud-storage==2.16.0 python-dotenv==1.0.1
-docker exec -u root marineflow-spark-silver-positions pip install pyspark==3.5.0 google-cloud-storage==2.16.0 python-dotenv==1.0.1
-docker exec -u root marineflow-spark-silver-metadata pip install pyspark==3.5.0 google-cloud-storage==2.16.0 python-dotenv==1.0.1
-
-# Install dbt in Airflow scheduler
-docker exec -u airflow marineflow-airflow-scheduler python -m pip install dbt-bigquery==1.8.2 google-cloud-bigquery==3.13.0
+# Airflow (builds orchestration/Dockerfile for the scheduler, dbt included)
+docker compose up postgres airflow-init airflow-webserver airflow-scheduler -d --build
 ```
 
-### 4. Start VM producer (or local for dev)
+### 4. Start the producer (local)
 
-```powershell
-# Start the GCP VM (producer auto-starts via systemd)
-gcloud compute instances start marineflow-ais-producer --zone=us-central1-a --project=marineflow-489815
-
-# Or run locally for development
+```bash
 cd ingestion/ais_producer && python main.py
 ```
 
-### 5. Verify landing files (~60s after producer starts)
+*(A Compute Engine VM previously ran this in the cloud — removed after the Kafka migration, since a remote VM can't reach a local-only broker. See Design Decisions.)*
 
-```powershell
-gcloud storage ls gs://marineflow-lake-marineflow-489815/pubsub-landing/vessel-positions/
+### 5. Verify messages are flowing (~10s after the producer starts)
+
+```bash
+docker exec marineflow-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic vessel-positions \
+  --from-beginning --max-messages 5
 ```
 
-### 6. Launch Spark jobs (three terminals)
+### 6. Launch Spark jobs (four terminals)
 
-```powershell
-# Bronze
-docker exec marineflow-spark-bronze /opt/spark/bin/spark-submit `
-  --master local[2] --driver-memory 2g `
-  --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem `
-  --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS `
-  --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT `
-  --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 `
-  --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true `
-  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar `
-  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar `
-  /opt/spark/processing/spark_streaming/bronze_positions.py
+```bash
+# Bronze positions — Kafka vessel-positions -> GCS + Kafka vessel-positions-bronze
+docker exec marineflow-spark-bronze /opt/spark/bin/spark-submit --master local[2] --driver-memory 2g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/bronze_positions.py
 
-# Silver positions (separate terminal)
-docker exec marineflow-spark-silver-positions /opt/spark/bin/spark-submit `
-  --master local[2] --driver-memory 2g `
-  --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem `
-  --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS `
-  --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT `
-  --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 `
-  --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true `
-  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar `
-  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar `
-  /opt/spark/processing/spark_streaming/silver_positions.py
+# Bronze metadata (separate terminal) — Kafka vessel-metadata -> GCS + Kafka vessel-metadata-bronze
+docker exec marineflow-spark-bronze-metadata /opt/spark/bin/spark-submit --master local[2] --driver-memory 2g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/bronze_metadata.py
 
-# Silver metadata (separate terminal)
-docker exec marineflow-spark-silver-metadata /opt/spark/bin/spark-submit `
-  --master local[2] --driver-memory 2g `
-  --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem `
-  --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS `
-  --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT `
-  --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 `
-  --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true `
-  --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar `
-  --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar `
-  /opt/spark/processing/spark_streaming/silver_metadata.py
+# Silver positions (separate terminal) — reads Kafka vessel-positions-bronze
+docker exec marineflow-spark-silver-positions /opt/spark/bin/spark-submit --master local[2] --driver-memory 2g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/silver_positions.py
+
+# Silver metadata (separate terminal) — reads Kafka vessel-metadata-bronze
+docker exec marineflow-spark-silver-metadata /opt/spark/bin/spark-submit --master local[2] --driver-memory 2g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/silver_metadata.py
 ```
 
 ### 7. dbt Gold models
 
-```powershell
+```bash
 cd transformation/dbt
 dbt deps
 dbt run
@@ -639,7 +564,7 @@ Access http://localhost:4080 (admin/admin) and enable the `marineflow_pipeline` 
 
 ### 9. Verify end-to-end
 
-```powershell
+```bash
 gcloud storage ls gs://marineflow-lake-marineflow-489815/bronze/vessel_positions/
 gcloud storage ls gs://marineflow-lake-marineflow-489815/silver/vessel_positions/
 
@@ -650,4 +575,4 @@ bq query --use_legacy_sql=false "SELECT alert_type, severity, COUNT(*) as n FROM
 ---
 
 *MarineFlow — Portfolio project*
-*Stack: Python · Apache Spark · GCP Pub/Sub · GCS · BigQuery · dbt · Airflow · Terraform · Compute Engine · Secret Manager*
+*Stack: Python · Apache Kafka · Apache Spark · GCS · BigQuery · dbt · Airflow · Terraform · Secret Manager*
