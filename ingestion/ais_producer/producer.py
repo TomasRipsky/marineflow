@@ -1,17 +1,17 @@
 # =============================================================================
-# MARINEFLOW — Pub/Sub Publisher
+# MARINEFLOW — Kafka Publisher
 # ingestion/ais_producer/producer.py
 #
-# Handles all communication with Google Cloud Pub/Sub.
-# Uses batching for efficiency and routes messages to the correct topic.
+# Handles all communication with the local Kafka broker.
+# Uses librdkafka's internal batching (linger.ms / batch.num.messages) and
+# keys each message by MMSI so all messages for a given vessel land on the
+# same partition — preserves per-vessel ordering downstream in Spark.
 # =============================================================================
 
 import json
-from typing import Optional
 
 import structlog
-from google.cloud import pubsub_v1
-from google.api_core.exceptions import GoogleAPICallError
+from confluent_kafka import Producer, KafkaException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
@@ -19,72 +19,85 @@ from config import Config
 logger = structlog.get_logger(__name__)
 
 
-class PubSubPublisher:
+class KafkaPublisher:
     """
-    Publishes normalized AIS messages to Google Cloud Pub/Sub.
+    Publishes normalized AIS messages to the local Kafka broker.
 
-    Uses BatchSettings for efficient publishing — messages are buffered
-    and sent in batches rather than one by one, reducing API calls significantly.
+    librdkafka batches internally per linger.ms/batch.num.messages — no manual
+    batching needed on the Python side. Delivery reports are handled async via
+    callback and drained with periodic non-blocking poll(0) calls.
     """
 
     def __init__(self) -> None:
-        # Batch settings — tune these to balance latency vs. throughput
-        batch_settings = pubsub_v1.types.BatchSettings(
-            max_messages=Config.PUBSUB_BATCH_MAX_MESSAGES,
-            max_latency=Config.PUBSUB_BATCH_MAX_LATENCY,
-            max_bytes=1024 * 1024,  # 1MB max batch size
-        )
+        producer_config = {
+            "bootstrap.servers": Config.KAFKA_BOOTSTRAP_SERVERS,
+            "linger.ms": int(Config.KAFKA_BATCH_MAX_LATENCY * 1000),
+            "batch.num.messages": Config.KAFKA_BATCH_MAX_MESSAGES,
+            "compression.type": "snappy",
+            "acks": "1",  # leader ack only — enough for this use case, faster than "all"
+            "retries": 3,
+            "retry.backoff.ms": 500,
+        }
+        self._producer = Producer(producer_config)
 
-        self._client = pubsub_v1.PublisherClient(batch_settings=batch_settings)
-        self._project_id = Config.GCP_PROJECT_ID
-
-        # Pre-build topic paths to avoid recomputing them on every message
         self._topics = {
-            "positions": self._topic_path(Config.TOPIC_POSITIONS),
-            "metadata": self._topic_path(Config.TOPIC_METADATA),
-            "dlq": self._topic_path(Config.TOPIC_DLQ),
+            "positions": Config.TOPIC_POSITIONS,
+            "metadata": Config.TOPIC_METADATA,
+            "dlq": Config.TOPIC_DLQ,
         }
 
         # In-memory counters for monitoring
-        self._published_count = 0
+        # Per-topic counters, e.g. {"positions": 0, "metadata": 0, "dlq": 0}
+        self._published_count = {k: 0 for k in self._topics}
         self._error_count = 0
 
         logger.info(
-            "pubsub_publisher_initialized",
-            project=self._project_id,
-            topics=list(self._topics.keys()),
+            "kafka_publisher_initialized",
+            bootstrap_servers=Config.KAFKA_BOOTSTRAP_SERVERS,
+            topics=list(self._topics.values()),
         )
-
-    def _topic_path(self, topic_name: str) -> str:
-        """Build the full Pub/Sub topic resource path."""
-        return self._client.topic_path(self._project_id, topic_name)
 
     def publish(self, data: dict, topic_key: str) -> None:
         """
-        Publish a single message to a Pub/Sub topic.
+        Publish a single message to a Kafka topic.
 
         Args:
             data: Dict to serialize as JSON and publish.
             topic_key: One of 'positions', 'metadata', 'dlq'.
         """
-        topic_path = self._topics.get(topic_key)
-        if not topic_path:
+        topic = self._topics.get(topic_key)
+        if not topic:
             logger.error("unknown_topic_key", topic_key=topic_key)
             return
 
         try:
             payload = json.dumps(data, default=str).encode("utf-8")
+            mmsi = data.get("mmsi")
+            key = str(mmsi).encode("utf-8") if mmsi is not None else None
 
-            # Attach source attribute for filtering and observability
-            attributes = {
-                "source": Config.MESSAGE_SOURCE,
-                "message_type": data.get("MessageType", "unknown"),
-            }
+            headers = [
+                ("source", Config.MESSAGE_SOURCE.encode("utf-8")),
+                ("message_type", str(data.get("MessageType", "unknown")).encode("utf-8")),
+            ]
 
-            future = self._client.publish(topic_path, payload, **attributes)
-            future.add_done_callback(self._on_publish_done)
-            self._published_count += 1
+            self._producer.produce(
+                topic=topic,
+                key=key,
+                value=payload,
+                headers=headers,
+                callback=self._on_delivery,
+            )
+            # Non-blocking — serves any pending delivery callbacks without
+            # waiting for the broker. Without this, callbacks only fire on
+            # the next produce()/flush(), which can lag under low throughput.
+            self._producer.poll(0)
+            self._published_count[topic_key] += 1
 
+        except BufferError:
+            # Local librdkafka queue is full — broker is slower than the
+            # producer. Block briefly to drain instead of dropping the message.
+            logger.warning("kafka_queue_full_backpressure", topic=topic_key)
+            self._producer.poll(1.0)
         except Exception as e:
             self._error_count += 1
             logger.error(
@@ -95,13 +108,11 @@ class PubSubPublisher:
             )
             self._send_to_dlq(data, str(e))
 
-    def _on_publish_done(self, future) -> None:
-        """Callback executed when a publish future resolves."""
-        try:
-            future.result()
-        except Exception as e:
+    def _on_delivery(self, err, msg) -> None:
+        """Delivery report callback — fired async by poll()/flush()."""
+        if err is not None:
             self._error_count += 1
-            logger.error("publish_future_error", error=str(e))
+            logger.error("delivery_failed", error=str(err), topic=msg.topic())
 
     @retry(
         stop=stop_after_attempt(3),
@@ -118,20 +129,31 @@ class PubSubPublisher:
             "source": Config.MESSAGE_SOURCE,
         }
         payload = json.dumps(dlq_payload, default=str).encode("utf-8")
-        self._client.publish(self._topics["dlq"], payload)
+        try:
+            self._producer.produce(topic=self._topics["dlq"], value=payload)
+            self._producer.poll(0)
+        except KafkaException as e:
+            logger.error("dlq_publish_failed", error=str(e))
+            raise
 
     def get_stats(self) -> dict:
-        """Return current publishing statistics."""
+        """Return current publishing statistics, broken down by topic."""
         return {
-            "published": self._published_count,
+            "published": dict(self._published_count),
+            "published_total": sum(self._published_count.values()),
             "errors": self._error_count,
         }
 
     def shutdown(self) -> None:
-        """Flush all pending messages and close the client."""
-        self._client.stop()
+        """Flush all pending messages (blocks until delivered or timeout) and close."""
+        remaining = self._producer.flush(timeout=10)
+        if remaining > 0:
+            logger.warning("kafka_shutdown_messages_not_flushed", remaining=remaining)
         logger.info(
-            "pubsub_publisher_shutdown",
-            total_published=self._published_count,
+            "kafka_publisher_shutdown",
+            published_positions=self._published_count["positions"],
+            published_metadata=self._published_count["metadata"],
+            published_dlq=self._published_count["dlq"],
+            total_published=sum(self._published_count.values()),
             total_errors=self._error_count,
         )

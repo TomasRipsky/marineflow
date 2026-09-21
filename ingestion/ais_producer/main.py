@@ -3,7 +3,7 @@
 # ingestion/ais_producer/main.py
 #
 # Connects to aisstream.io via WebSocket, receives AIS messages in real time,
-# parses them and publishes to the corresponding Pub/Sub topic.
+# parses them and publishes to the corresponding kafka topic.
 #
 # Usage:
 #   python main.py
@@ -25,7 +25,7 @@ from tenacity import (
 
 from config import Config
 from parser import parse_message
-from producer import PubSubPublisher
+from producer import KafkaPublisher
 
 # =============================================================================
 # Logging setup — structured JSON logs for GCP Cloud Logging compatibility
@@ -65,7 +65,7 @@ async def subscribe(ws) -> None:
     )
 
 
-async def process_message(raw_message: str, publisher: PubSubPublisher) -> None:
+async def process_message(raw_message: str, publisher: KafkaPublisher) -> None:
     """
     Parse a single raw WebSocket message and publish it to Pub/Sub.
     Invalid or unhandled messages are silently skipped.
@@ -89,7 +89,7 @@ async def process_message(raw_message: str, publisher: PubSubPublisher) -> None:
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=2, min=2, max=60),
 )
-async def connect_and_stream(publisher: PubSubPublisher) -> None:
+async def connect_and_stream(publisher: KafkaPublisher) -> None:
     """
     Main streaming loop — connects to aisstream.io and processes messages.
 
@@ -151,11 +151,11 @@ async def main() -> None:
 
     logger.info(
         "ais_producer_starting",
-        project=Config.GCP_PROJECT_ID,
+        kafka_bootstrap_servers=Config.KAFKA_BOOTSTRAP_SERVERS,
         source=Config.MESSAGE_SOURCE,
     )
 
-    publisher = PubSubPublisher()
+    publisher = KafkaPublisher()
 
     # Register shutdown handlers
     signal.signal(signal.SIGINT, handle_shutdown)

@@ -65,29 +65,6 @@ module "gcs" {
   depends_on = [module.iam]
 }
 
-module "pubsub" {
-  source                 = "./modules/pubsub"
-  project_id             = var.project_id
-  gcs_bucket             = "${var.gcs_bucket_name}-${var.project_id}"
-  message_retention_days = var.pubsub_message_retention_days
-  ack_deadline_seconds   = var.pubsub_ack_deadline_seconds
-  labels                 = local.common_labels
-
-  depends_on = [module.iam, module.gcs]
-}
-
-module "compute" {
-  source                = "./modules/compute"
-  project_id            = var.project_id
-  region                = var.region
-  zone                  = "${var.region}-a"
-  service_account_email = module.iam.service_account_email
-  repo_url              = var.repo_url
-  labels                = local.common_labels
-
-  depends_on = [module.iam]
-}
-
 module "bigquery" {
   source       = "./modules/bigquery"
   project_id   = var.project_id

@@ -2,24 +2,16 @@
 # MARINEFLOW — Spark Bronze Layer Job
 # processing/spark_streaming/bronze_positions.py
 #
-# Reads vessel position messages from GCS using Spark Structured Streaming.
-# Messages arrive via the Pub/Sub Cloud Storage subscription which writes
-# each batch of Pub/Sub messages as a JSON file to:
-#   gs://{bucket}/pubsub-landing/vessel-positions/
+# Reads vessel position messages directly from the Kafka topic
+# "vessel-positions" using Spark Structured Streaming's native Kafka source
+# (spark-sql-kafka) — push-based, no GCS landing zone, no file-polling.
 #
-# Each file contains one Pub/Sub envelope per line:
-#   {
-#     "subscription": "...",
-#     "message": {
-#       "data": "<base64 encoded raw AIS JSON>",
-#       "messageId": "...",
-#       "publishTime": "...",
-#       "attributes": {"source": "aisstream_live", "message_type": "PositionReport"}
-#     }
-#   }
+# The producer publishes the raw aisstream.io JSON as-is (see
+# ingestion/ais_producer/parser.py), so the message schema below is
+# unchanged from the old GCS-landing version — only the *source* changed.
 #
 # Bronze responsibilities:
-#   1. Decode base64 message.data → raw AIS JSON
+#   1. Parse the Kafka message value (JSON) into structured columns
 #   2. Extract PositionReport fields with their original names
 #   3. Filter physically impossible coordinates
 #   4. Add partition columns and lineage fields
@@ -28,28 +20,40 @@
 # Bronze philosophy:
 #   - Zero business transformations — field names match aisstream.io exactly
 #   - Minimal validation — only reject physically impossible records
-#   - Full lineage — every record knows its Pub/Sub messageId, batch and version
+#   - Full lineage — every record knows its Kafka offset, batch and version
 #
 # Run:
 #   spark-submit \
+#     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
 #     --jars jars/gcs-connector-hadoop3-latest.jar \
 #     bronze_positions.py
 # =============================================================================
 
-import logging
 import os
 import sys
+import time
 import uuid
 
+import structlog
 from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="🔹 %(asctime)s [%(levelname)s] %(name)s: %(message)s",
+# py4j's own client logger is very chatty at INFO ("Received command c on
+# object id p0" for every JVM<->Python call) and drowns out the logs that
+# actually matter. Silence it independently of Spark's own log level.
+import logging as _stdlib_logging
+_stdlib_logging.getLogger("py4j").setLevel(_stdlib_logging.WARNING)
+
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True),
+        structlog.processors.add_log_level,
+        structlog.dev.ConsoleRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(_stdlib_logging.INFO),
 )
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger("bronze_positions")
 
 # =============================================================================
 # Configuration
@@ -59,11 +63,22 @@ GCP_PROJECT_ID    = os.getenv("GCP_PROJECT_ID", "")
 GCS_BUCKET        = os.getenv("GCS_BUCKET", "")
 PIPELINE_VERSION  = os.getenv("PIPELINE_VERSION", "dev")
 
-LANDING_DIR       = f"gs://{GCS_BUCKET}/pubsub-landing/vessel-positions"
-BRONZE_OUTPUT_DIR = f"gs://{GCS_BUCKET}/bronze/vessel_positions"
-CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/bronze_positions"
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+KAFKA_TOPIC_POSITIONS   = os.getenv("KAFKA_TOPIC_POSITIONS", "vessel-positions")
+KAFKA_TOPIC_POSITIONS_BRONZE = os.getenv("KAFKA_TOPIC_POSITIONS_BRONZE", "vessel-positions-bronze")
+# Only applies the first time this job runs (no checkpoint yet) — once a
+# checkpoint exists, Spark always resumes from the committed offsets and
+# ignores this setting. "earliest" is convenient for local dev/validation
+# since it replays whatever the producer already wrote to the topic.
+KAFKA_STARTING_OFFSETS = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
 
-MAX_FILES_PER_TRIGGER = int(os.getenv("BRONZE_MAX_FILES_PER_TRIGGER", "10"))
+BRONZE_OUTPUT_DIR = f"gs://{GCS_BUCKET}/bronze/vessel_positions"
+# New checkpoint path — the old file-source checkpoint (checkpoints/bronze_positions)
+# is NOT compatible with a Kafka source (different offset tracking format) and
+# would crash the job if reused. Keep this path, don't point back at the old one.
+CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/bronze_positions_kafka"
+
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("BRONZE_MAX_OFFSETS_PER_TRIGGER", "1000"))
 
 
 # =============================================================================
@@ -72,9 +87,8 @@ MAX_FILES_PER_TRIGGER = int(os.getenv("BRONZE_MAX_FILES_PER_TRIGGER", "10"))
 
 def get_landing_schema():
     """
-    Schema of the JSON files written by the Pub/Sub Cloud Storage subscription.
-    GCP writes the raw AIS message directly — no envelope wrapper.
-    Each file contains one complete AIS JSON message.
+    Schema of the raw aisstream.io JSON published to the Kafka topic by the
+    producer (ingestion/ais_producer/parser.py) — published as-is, no envelope.
     """
     from pyspark.sql.types import (
         StructType, StructField, StringType, DoubleType,
@@ -122,9 +136,10 @@ def get_landing_schema():
 def extract_fields(df):
     """
     Flatten the nested AIS JSON structure into top-level Bronze columns.
-    GCS subscription writes raw AIS JSON directly — no base64 or envelope.
-    Only PositionReport messages are extracted here.
-    ShipStaticData is handled by silver_metadata.py from its own landing dir.
+    Only PositionReport messages are extracted here — the "positions" topic
+    should only ever carry PositionReport (see parser.py routing), but the
+    filter stays as a defensive check.
+    ShipStaticData is handled by silver_metadata.py from its own Kafka topic.
     """
     from pyspark.sql import functions as F
 
@@ -218,13 +233,33 @@ def process_micro_batch(df, epoch_id: int):
     from pyspark.sql import functions as F
 
     batch_id = str(uuid.uuid4())[:8]
-    logger.info(f"Processing micro-batch epoch={epoch_id} batch_id={batch_id}")
+    t0 = time.monotonic()
+
+    if df.isEmpty():
+        logger.info(
+            "⏳ idle — no new messages this cycle, waiting for next trigger",
+            epoch=epoch_id,
+        )
+        return
+
+    raw_count = df.count()
+    logger.info(
+        "▶ micro-batch started",
+        epoch=epoch_id, batch_id=batch_id, rows_read=raw_count,
+    )
 
     extracted = extract_fields(df)
     validated  = validate(extracted)
     enriched   = add_partition_and_lineage(validated, batch_id)
 
+    # Row counts are extra Spark actions (real cost) — worth it here for
+    # visibility into what's silently dropped; drop them first if this
+    # ever needs to be squeezed for max throughput at higher volume.
+    valid_count = enriched.count()
+    rejected_count = raw_count - valid_count
+
     # Write partitioned Parquet — one file per micro-batch per partition
+    # Sink 1: GCS Parquet — permanent historical archive
     (
         enriched.coalesce(1)
         .write
@@ -232,7 +267,28 @@ def process_micro_batch(df, epoch_id: int):
         .partitionBy("partition_date", "partition_hour")
         .parquet(BRONZE_OUTPUT_DIR)
     )
-    logger.info(f"Micro-batch {epoch_id} processed successfully.")
+
+    # Sink 2: Kafka topic — Silver reads this directly (push-based), no GCS polling
+    (
+        enriched
+        .select(
+            F.col("MMSI").cast("string").alias("key"),
+            F.to_json(F.struct(*enriched.columns)).alias("value"),
+        )
+        .write
+        .format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
+        .option("topic", KAFKA_TOPIC_POSITIONS_BRONZE)
+        .save()
+    )
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "✅ micro-batch complete",
+        epoch=epoch_id, batch_id=batch_id,
+        rows_written=valid_count, rows_rejected=rejected_count,
+        duration_ms=duration_ms,
+    )
 
 
 # =============================================================================
@@ -249,6 +305,7 @@ def create_spark_session():
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.jars", "/opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar")
+        .config("spark.jars.ivy", "/opt/spark/.ivy2")
         .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
         .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
         .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
@@ -266,32 +323,49 @@ def create_spark_session():
 # =============================================================================
 
 def validate_config() -> None:
-    missing = [v for v in ["GCP_PROJECT_ID", "GCS_BUCKET"] if not os.getenv(v)]
+    missing = [v for v in ["GCS_BUCKET"] if not GCS_BUCKET]
     if missing:
-        logger.error(f"Missing required environment variables: {missing}")
+        logger.error("✗ missing required environment variables", missing=missing)
         sys.exit(1)
 
 
 def main() -> None:
     validate_config()
 
-    logger.info("Starting MarineFlow Bronze Positions job")
-    logger.info(f"Landing dir:  {LANDING_DIR}")
-    logger.info(f"Bronze output: {BRONZE_OUTPUT_DIR}")
-    logger.info(f"Checkpoint:   {CHECKPOINT_DIR}")
+    logger.info(
+        "🚀 starting MarineFlow Bronze Positions job",
+        kafka_topic=KAFKA_TOPIC_POSITIONS,
+        kafka_bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        bronze_output=BRONZE_OUTPUT_DIR,
+        checkpoint=CHECKPOINT_DIR,
+        trigger_interval="30 seconds",
+        max_offsets_per_trigger=MAX_OFFSETS_PER_TRIGGER,
+    )
 
     spark = create_spark_session()
 
-    # Read new JSON files as they arrive in the landing directory.
-    # GCS subscription writes raw AIS JSON directly — one message per file.
-    ais_stream = (
+    from pyspark.sql import functions as F
+
+    # Native Kafka source — push-based, no file polling. Kafka gives us
+    # key/value as binary plus topic/partition/offset/timestamp metadata;
+    # we only need value (the raw AIS JSON), parsed against the same schema
+    # the old file-source version used.
+    kafka_raw = (
         spark.readStream
-        .format("json")
-        .schema(get_landing_schema())
-        .option("path", LANDING_DIR)
-        .option("maxFilesPerTrigger", MAX_FILES_PER_TRIGGER)
-        .option("latestFirst", "false")
+        .format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
+        .option("subscribe", KAFKA_TOPIC_POSITIONS)
+        .option("startingOffsets", KAFKA_STARTING_OFFSETS)
+        .option("maxOffsetsPerTrigger", MAX_OFFSETS_PER_TRIGGER)
+        .option("failOnDataLoss", "false")  # tolerate offset gaps in local dev (topic recreated, retention, etc.)
         .load()
+    )
+
+    ais_stream = (
+        kafka_raw
+        .selectExpr("CAST(value AS STRING) AS json_value")
+        .select(F.from_json(F.col("json_value"), get_landing_schema()).alias("data"))
+        .select("data.*")
     )
 
     query = (
@@ -302,10 +376,12 @@ def main() -> None:
         .start()
     )
 
+    logger.info("👂 listening on Kafka — one cycle every 30s")
+
     try:
         query.awaitTermination()
     except KeyboardInterrupt:
-        logger.info("Shutdown signal received")
+        logger.info("🛑 shutdown signal received, stopping stream gracefully")
         query.stop()
     finally:
         spark.stop()

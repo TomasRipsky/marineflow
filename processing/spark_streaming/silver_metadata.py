@@ -2,12 +2,12 @@
 # MARINEFLOW — Spark Silver Metadata Job
 # processing/spark_streaming/silver_metadata.py
 #
-# Reads ShipStaticData messages from the GCS landing directory
-# (written by the vessel-metadata Pub/Sub Cloud Storage subscription)
+# Reads ShipStaticData messages directly from the Kafka topic
+# "vessel-metadata" using Spark Structured Streaming's native Kafka source,
 # and transforms them into the Silver vessel_metadata table.
 #
-# Envelope format (same as bronze_positions.py):
-#   message.data = base64(raw AIS ShipStaticData JSON)
+# The producer publishes the raw aisstream.io JSON as-is (same shape as
+# before — only the transport changed from Pub/Sub+GCS to Kafka).
 #
 # Fields populated here:
 #   vessel_type_normalized  — AIS integer → semantic category
@@ -16,24 +16,33 @@
 #
 # Run:
 #   spark-submit \
+#     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
 #     --jars jars/gcs-connector-hadoop3-latest.jar \
 #     silver_metadata.py
 # =============================================================================
 
-import logging
 import os
 import sys
+import time
 import uuid
 
+import structlog
 from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+import logging as _stdlib_logging
+_stdlib_logging.getLogger("py4j").setLevel(_stdlib_logging.WARNING)
+
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True),
+        structlog.processors.add_log_level,
+        structlog.dev.ConsoleRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(_stdlib_logging.INFO),
 )
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger("silver_metadata")
 
 # =============================================================================
 # Configuration
@@ -42,11 +51,15 @@ logger = logging.getLogger(__name__)
 GCP_PROJECT_ID    = os.getenv("GCP_PROJECT_ID", "")
 GCS_BUCKET        = os.getenv("GCS_BUCKET", "")
 
-LANDING_DIR       = f"gs://{GCS_BUCKET}/pubsub-landing/vessel-metadata"
-METADATA_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_metadata"
-CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_metadata"
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+KAFKA_TOPIC_METADATA_BRONZE = os.getenv("KAFKA_TOPIC_METADATA_BRONZE", "vessel-metadata-bronze")
+KAFKA_STARTING_OFFSETS  = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
 
-MAX_FILES_PER_TRIGGER = int(os.getenv("METADATA_MAX_FILES_PER_TRIGGER", "10"))
+METADATA_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_metadata"
+# New checkpoint path — incompatible with the old file-source checkpoint.
+CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_metadata_kafka"
+
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("METADATA_MAX_OFFSETS_PER_TRIGGER", "1000"))
 
 # =============================================================================
 # Reference data
@@ -89,32 +102,18 @@ MID_MAP = {
 # =============================================================================
 
 def get_landing_schema():
-    """
-    Schema of the JSON files written by the Pub/Sub Cloud Storage subscription.
-    GCP writes the raw AIS ShipStaticData message directly — no envelope.
-    """
-    from pyspark.sql.types import (
-        StructType, StructField, StringType,
-        IntegerType, FloatType, LongType,
-    )
-    ship_static = StructType([
-        StructField("UserID",               IntegerType(), True),
-        StructField("Type",                 IntegerType(), True),
-        StructField("ImoNumber",            IntegerType(), True),
-        StructField("Callsign",             StringType(),  True),
-        StructField("Name",                 StringType(),  True),
-        StructField("Destination",          StringType(),  True),
-        StructField("MaximumStaticDraught", FloatType(),   True),
-    ])
+    """Flat schema matching bronze_metadata.py's output (published to Kafka)."""
+    from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType, TimestampType
     return StructType([
-        StructField("Message", StructType([
-            StructField("ShipStaticData", ship_static, True),
-        ]), True),
-        StructField("MessageType", StringType(), True),
-        StructField("MetaData", StructType([
-            StructField("MMSI",     LongType(),   True),
-            StructField("ShipName", StringType(), True),
-        ]), True),
+        StructField("MMSI",                 StringType(),    True),
+        StructField("ShipName",              StringType(),    True),
+        StructField("Type",                  IntegerType(),   True),
+        StructField("ImoNumber",             IntegerType(),   True),
+        StructField("Callsign",              StringType(),    True),
+        StructField("Name",                  StringType(),    True),
+        StructField("Destination",           StringType(),    True),
+        StructField("MaximumStaticDraught",  FloatType(),     True),
+        StructField("ingestion_timestamp",   TimestampType(), True),
     ])
 
 
@@ -126,50 +125,33 @@ def get_landing_schema():
 # =============================================================================
 
 def decode_and_transform(df):
-    """
-    Extract ShipStaticData fields and apply Silver transforms.
-    GCS subscription writes raw AIS JSON directly — no envelope to decode.
-    """
+    """Apply Silver transforms to the flat Bronze metadata records."""
     from pyspark.sql import functions as F
-
-    # Filter only ShipStaticData messages
-    df = df.filter(F.col("MessageType") == "ShipStaticData")
 
     # Build vessel_type expression
     type_expr = F.lit(None).cast("string")
     for code, label in VESSEL_TYPE_MAP.items():
-        type_expr = F.when(
-            F.col("Message.ShipStaticData.Type") == code, label
-        ).otherwise(type_expr)
+        type_expr = F.when(F.col("Type") == code, label).otherwise(type_expr)
     type_expr = F.when(
-        F.col("Message.ShipStaticData.Type").isNotNull() & type_expr.isNull(),
-        F.lit("other")
+        F.col("Type").isNotNull() & type_expr.isNull(), F.lit("other")
     ).otherwise(type_expr)
 
     # Build flag_country from MMSI MID
-    mmsi_str = F.col("MetaData.MMSI").cast("string")
     flag_expr = F.lit(None).cast("string")
     for mid, country in MID_MAP.items():
-        flag_expr = F.when(mmsi_str.startswith(mid), country).otherwise(flag_expr)
+        flag_expr = F.when(F.col("MMSI").startswith(mid), country).otherwise(flag_expr)
 
     return df.select(
-        F.col("MetaData.MMSI").cast("string").alias("mmsi"),
-        F.coalesce(
-            F.trim(F.col("MetaData.ShipName")),
-            F.trim(F.col("Message.ShipStaticData.Name"))
-        ).alias("vessel_name"),
+        F.col("MMSI").alias("mmsi"),
+        F.coalesce(F.trim(F.col("ShipName")), F.trim(F.col("Name"))).alias("vessel_name"),
         type_expr.alias("vessel_type_normalized"),
-        F.col("Message.ShipStaticData.ImoNumber").cast("string").alias("imo_number"),
-        F.trim(F.col("Message.ShipStaticData.Callsign")).alias("callsign"),
+        F.col("ImoNumber").cast("string").alias("imo_number"),
+        F.trim(F.col("Callsign")).alias("callsign"),
         F.when(
-            F.upper(F.trim(F.col("Message.ShipStaticData.Destination"))).isin(
-                list(DESTINATION_JUNK)
-            ),
+            F.upper(F.trim(F.col("Destination"))).isin(list(DESTINATION_JUNK)),
             F.lit(None).cast("string")
-        ).otherwise(
-            F.upper(F.trim(F.col("Message.ShipStaticData.Destination")))
-        ).alias("destination_clean"),
-        F.col("Message.ShipStaticData.MaximumStaticDraught").alias("draught"),
+        ).otherwise(F.upper(F.trim(F.col("Destination")))).alias("destination_clean"),
+        F.col("MaximumStaticDraught").alias("draught"),
         flag_expr.alias("flag_country"),
         F.lit("aisstream_live").alias("source_system"),
         F.current_timestamp().alias("processing_timestamp"),
@@ -185,7 +167,9 @@ def process_micro_batch(df, epoch_id: int):
     from pyspark.sql import functions as F
 
     batch_id = str(uuid.uuid4())[:8]
-    logger.info(f"Processing metadata micro-batch epoch={epoch_id} batch_id={batch_id}")
+    t0 = time.monotonic()
+    raw_count = df.count()
+    logger.info("▶ micro-batch started", epoch=epoch_id, batch_id=batch_id, rows_read=raw_count)
 
     transformed = decode_and_transform(df)
 
@@ -196,7 +180,7 @@ def process_micro_batch(df, epoch_id: int):
 
     record_count = bq_df.count()
     if record_count == 0:
-        logger.info(f"Micro-batch {epoch_id}: no valid ShipStaticData records")
+        logger.info("⏳ idle — no valid ShipStaticData records", epoch=epoch_id, rows_read=raw_count)
         return
 
     (
@@ -206,7 +190,12 @@ def process_micro_batch(df, epoch_id: int):
         .partitionBy("partition_date")
         .parquet(METADATA_OUTPUT_DIR)
     )
-    logger.info(f"Micro-batch {epoch_id}: wrote {record_count} metadata records to {METADATA_OUTPUT_DIR}")
+    logger.info(
+        "✅ micro-batch complete",
+        epoch=epoch_id, batch_id=batch_id,
+        rows_read=raw_count, rows_written=record_count,
+        duration_ms=int((time.monotonic() - t0) * 1000),
+    )
 
 
 # =============================================================================
@@ -222,6 +211,7 @@ def create_spark_session():
         .master(os.getenv("SPARK_MASTER", "local[*]"))
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.jars.ivy", "/opt/spark/.ivy2")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -233,39 +223,55 @@ def create_spark_session():
 # =============================================================================
 
 def validate_config() -> None:
-    missing = [v for v in ["GCP_PROJECT_ID", "GCS_BUCKET"] if not os.getenv(v)]
+    missing = [v for v in ["GCS_BUCKET"] if not GCS_BUCKET]
     if missing:
-        logger.error(f"Missing required environment variables: {missing}")
+        logger.error("✗ missing required environment variables", missing=missing)
         sys.exit(1)
 
 
 def main() -> None:
     validate_config()
 
-    logger.info("Starting MarineFlow Silver Metadata job")
-    logger.info(f"Landing dir: {LANDING_DIR}")
-    logger.info(f"Output:      {METADATA_OUTPUT_DIR}")
-    logger.info(f"Checkpoint:  {CHECKPOINT_DIR}")
+    logger.info(
+        "🚀 starting MarineFlow Silver Metadata job",
+        kafka_topic=KAFKA_TOPIC_METADATA_BRONZE,
+        kafka_bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        output=METADATA_OUTPUT_DIR,
+        checkpoint=CHECKPOINT_DIR,
+        trigger_interval="30 seconds",
+    )
 
     spark = create_spark_session()
 
-    ais_stream = (
+    from pyspark.sql import functions as F
+
+    kafka_raw = (
         spark.readStream
-        .format("json")
-        .schema(get_landing_schema())
-        .option("path", LANDING_DIR)
-        .option("maxFilesPerTrigger", MAX_FILES_PER_TRIGGER)
-        .option("latestFirst", "false")
+        .format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
+        .option("subscribe", KAFKA_TOPIC_METADATA_BRONZE)
+        .option("startingOffsets", KAFKA_STARTING_OFFSETS)
+        .option("maxOffsetsPerTrigger", MAX_OFFSETS_PER_TRIGGER)
+        .option("failOnDataLoss", "false")
         .load()
+    )
+
+    ais_stream = (
+        kafka_raw
+        .selectExpr("CAST(value AS STRING) AS json_value")
+        .select(F.from_json(F.col("json_value"), get_landing_schema()).alias("data"))
+        .select("data.*")
     )
 
     query = (
         ais_stream.writeStream
         .foreachBatch(process_micro_batch)
         .option("checkpointLocation", CHECKPOINT_DIR)
-        .trigger(processingTime="60 seconds")
+        .trigger(processingTime="30 seconds")
         .start()
     )
+
+    logger.info("👂 listening on Kafka — one cycle every 30s")
 
     try:
         query.awaitTermination()

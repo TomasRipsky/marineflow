@@ -42,8 +42,3 @@ output "checkpoints_path" {
   description = "Full GCS path for Spark Structured Streaming checkpoints"
   value       = "gs://${google_storage_bucket.data_lake.name}/checkpoints"
 }
-
-output "models_path" {
-  description = "Full GCS path for ML model artifacts"
-  value       = "gs://${google_storage_bucket.data_lake.name}/models"
-}

@@ -2,9 +2,8 @@
 -- anomaly_candidates.sql
 -- Gold model — vessels showing suspicious behaviour patterns.
 --
--- This model is the primary input for the Isolation Forest anomaly detector
--- in Phase 4. It flags vessels based on rule-based heuristics that serve
--- as labeled signals for the ML model.
+-- It flags vessels based on rule-based heuristics (thresholds and patterns
+-- over AIS gaps, speed and course), no ML involved.
 --
 -- Alert types:
 --   - ais_gap:         vessel disappears from AIS for > 2 hours

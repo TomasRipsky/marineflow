@@ -5,20 +5,6 @@
 # manages the additional IAM bindings that Terraform needs to control.
 # =============================================================================
 
-# Binding: SA can publish to all Pub/Sub topics in the project
-resource "google_project_iam_member" "pubsub_publisher" {
-  project = var.project_id
-  role    = "roles/pubsub.publisher"
-  member  = "serviceAccount:${var.service_account_email}"
-}
-
-# Binding: SA can create subscriptions and consume messages
-resource "google_project_iam_member" "pubsub_subscriber" {
-  project = var.project_id
-  role    = "roles/pubsub.subscriber"
-  member  = "serviceAccount:${var.service_account_email}"
-}
-
 # Binding: SA can read and write objects in GCS
 resource "google_project_iam_member" "storage_object_admin" {
   project = var.project_id

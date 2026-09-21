@@ -96,7 +96,7 @@ daily_summary as (
         -- Distance
         round(sum(segment_distance_km), 2)                         as estimated_distance_km,
 
-        -- Anomaly signals (inputs for ML model in Phase 4)
+        -- Anomaly signals
         round(avg(speed_change_rate), 3)                           as avg_speed_change_rate,
         round(max(speed_change_rate), 3)                           as max_speed_change_rate,
         round(avg(heading_change_degrees), 3)                      as avg_heading_change,

@@ -48,21 +48,3 @@ variable "bq_location" {
   type        = string
   default     = "US"
 }
-
-# Pub/Sub
-variable "pubsub_message_retention_days" {
-  description = "Number of days to retain messages in Pub/Sub topics"
-  type        = number
-  default     = 7
-}
-
-variable "pubsub_ack_deadline_seconds" {
-  description = "Acknowledgment deadline for Pub/Sub subscriptions in seconds"
-  type        = number
-  default     = 60
-}
-
-variable "repo_url" {
-  description = "Git repository URL"
-  type        = string
-}

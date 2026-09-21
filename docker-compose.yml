@@ -6,20 +6,75 @@
 services:
 
   # ---------------------------------------------------------------------------
+  # Kafka — local broker (KRaft mode, no Zookeeper). Replaces Pub/Sub as the
+  # ingestion transport: the producer publishes here, and Spark reads it
+  # natively via the spark-sql-kafka connector (push-based, no GCS landing
+  # zone, no file-polling latency).
+  # Two listeners: PLAINTEXT for the host (local producer), DOCKER for the
+  # internal network (Spark containers).
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: marineflow-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,DOCKER://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,DOCKER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - marineflow-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # One-shot job: creates the topics explicitly (mirrors what Terraform did
+  # for Pub/Sub topics) instead of relying on auto-create.
+  # ---------------------------------------------------------------------------
+  kafka-init-topics:
+    image: apache/kafka:3.7.0
+    container_name: marineflow-kafka-init-topics
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-positions --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092 &&
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-positions-bronze --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092 &&
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-metadata --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092 &&
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-metadata-bronze --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092 &&
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic dead-letter-queue --partitions 1 --replication-factor 1 --bootstrap-server kafka:29092
+    networks:
+      - marineflow-net
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
   # Spark Bronze — reads from GCS pubsub-landing via Structured Streaming
   # Each job runs in its own container to avoid concurrent checkpoint conflicts.
   # ---------------------------------------------------------------------------
   spark-bronze:
-    image: apache/spark:3.5.0
+    build:
+      context: ./processing
+      dockerfile: Dockerfile
+    image: marineflow-spark:3.5.0
     container_name: marineflow-spark-bronze
-    user: root
-    entrypoint: >
-          /bin/sh -c "
-          if [ -f /opt/spark/processing/spark_streaming/requirements.txt ]; then
-            pip install --no-cache-dir -r /opt/spark/processing/spark_streaming/requirements.txt;
-          fi;
-          /bin/sleep infinity
-          "
+    entrypoint: ["/bin/sleep", "infinity"]
+    depends_on:
+      kafka:
+        condition: service_healthy
     environment:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET=${GCS_BUCKET}
@@ -28,22 +83,33 @@ services:
       - PIPELINE_VERSION=${PIPELINE_VERSION:-0.1.0}
       - SPARK_MASTER=local[2]
       - SPARK_DRIVER_MEMORY=2g
+      # Internal Docker hostname:port — NOT the host's localhost:9092
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC_POSITIONS=${KAFKA_TOPIC_POSITIONS:-vessel-positions}
+      - KAFKA_TOPIC_POSITIONS_BRONZE=${KAFKA_TOPIC_POSITIONS_BRONZE:-vessel-positions-bronze}
     ports:
       - "4040:4040"
     volumes:
       - ./processing:/opt/spark/processing
       - ./processing/spark-conf/log4j2.properties:/opt/spark/conf/log4j2.properties:ro
       - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - spark-ivy-cache:/opt/spark/.ivy2
     networks:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # Spark Silver Positions — reads from GCS Bronze via Structured Streaming
+  # Spark Silver Positions — reads from Kafka vessel-positions-bronze
   # ---------------------------------------------------------------------------
   spark-silver-positions:
-    image: apache/spark:3.5.0
+    build:
+      context: ./processing
+      dockerfile: Dockerfile
+    image: marineflow-spark:3.5.0
     container_name: marineflow-spark-silver-positions
     entrypoint: ["/bin/sleep", "infinity"]
+    depends_on:
+      kafka:
+        condition: service_healthy
     environment:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET=${GCS_BUCKET}
@@ -51,19 +117,58 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
       - BQ_DATASET_SILVER=marineflow_silver
       - SPARK_MASTER=local[2]
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC_POSITIONS_BRONZE=${KAFKA_TOPIC_POSITIONS_BRONZE:-vessel-positions-bronze}
     volumes:
       - ./processing:/opt/spark/processing
       - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - spark-ivy-cache:/opt/spark/.ivy2
     networks:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # Spark Silver Metadata — reads from GCS pubsub-landing/vessel-metadata
+  # Spark Bronze Metadata — reads Kafka vessel-metadata, writes GCS + Kafka
+  # ---------------------------------------------------------------------------
+  spark-bronze-metadata:
+    build:
+      context: ./processing
+      dockerfile: Dockerfile
+    image: marineflow-spark:3.5.0
+    container_name: marineflow-spark-bronze-metadata
+    entrypoint: ["/bin/sleep", "infinity"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET=${GCS_BUCKET}
+      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
+      - PIPELINE_VERSION=${PIPELINE_VERSION:-0.1.0}
+      - SPARK_MASTER=local[2]
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC_METADATA=${KAFKA_TOPIC_METADATA:-vessel-metadata}
+      - KAFKA_TOPIC_METADATA_BRONZE=${KAFKA_TOPIC_METADATA_BRONZE:-vessel-metadata-bronze}
+    volumes:
+      - ./processing:/opt/spark/processing
+      - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - spark-ivy-cache:/opt/spark/.ivy2
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
+  # Spark Silver Metadata — reads Kafka vessel-metadata-bronze
   # ---------------------------------------------------------------------------
   spark-silver-metadata:
-    image: apache/spark:3.5.0
+    build:
+      context: ./processing
+      dockerfile: Dockerfile
+    image: marineflow-spark:3.5.0
     container_name: marineflow-spark-silver-metadata
     entrypoint: ["/bin/sleep", "infinity"]
+    depends_on:
+      kafka:
+        condition: service_healthy
     environment:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET=${GCS_BUCKET}
@@ -71,9 +176,12 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json
       - BQ_DATASET_SILVER=marineflow_silver
       - SPARK_MASTER=local[2]
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC_METADATA_BRONZE=${KAFKA_TOPIC_METADATA_BRONZE:-vessel-metadata-bronze}
     volumes:
       - ./processing:/opt/spark/processing
       - ${ADC_PATH:-~/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro
+      - spark-ivy-cache:/opt/spark/.ivy2
     networks:
       - marineflow-net
 
@@ -130,6 +238,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     networks:
       - marineflow-net
     healthcheck:
@@ -139,7 +249,10 @@ services:
       retries: 5
 
   airflow-scheduler:
-    image: apache/airflow:2.8.1
+    build:
+      context: ./orchestration
+      dockerfile: Dockerfile
+    image: marineflow-airflow:2.8.1
     container_name: marineflow-airflow-scheduler
     command: scheduler
     environment:
@@ -158,11 +271,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     networks:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # PostgreSQL — backend for Airflow and MLflow
+  # PostgreSQL — backend for Airflow
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15
@@ -182,47 +297,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # ---------------------------------------------------------------------------
-  # Redis — cache for FastAPI predictions
-  # ---------------------------------------------------------------------------
-  redis:
-    image: redis:7-alpine
-    container_name: marineflow-redis
-    ports:
-      - "6379:6379"
-    networks:
-      - marineflow-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ---------------------------------------------------------------------------
-  # MLflow — model tracking and registry
-  # ---------------------------------------------------------------------------
-  mlflow:
-    image: python:3.11-slim
-    container_name: marineflow-mlflow
-    command: >
-      bash -c "pip install mlflow==2.11.1 psycopg2-binary &&
-               mlflow server
-               --backend-store-uri postgresql://marineflow:marineflow_dev_password@postgres:5432/marineflow
-               --default-artifact-root gs://${GCS_BUCKET}/models/mlflow
-               --host 0.0.0.0
-               --port 5001"
-    ports:
-      - "5001:5001"
-    environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=/opt/gcp-credentials.json
-    volumes:
-      - ./gcp-credentials.json:/opt/gcp-credentials.json:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - marineflow-net
 
   # ---------------------------------------------------------------------------
   # Prometheus — pipeline metrics
@@ -263,6 +337,8 @@ volumes:
   postgres-data:
   grafana-data:
   airflow-logs:
+  kafka-data:
+  spark-ivy-cache:
 
 # =============================================================================
 # Networks
