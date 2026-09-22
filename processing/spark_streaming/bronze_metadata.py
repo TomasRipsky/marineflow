@@ -206,6 +206,7 @@ def main() -> None:
 
     query = (
         ais_stream.writeStream
+        .queryName("bronze_metadata")
         .foreachBatch(process_micro_batch)
         .option("checkpointLocation", CHECKPOINT_DIR)
         .trigger(processingTime="30 seconds")

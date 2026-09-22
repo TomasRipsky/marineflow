@@ -1,0 +1,12 @@
+# Tells Grafana to load any dashboard JSON in ./json on startup.
+apiVersion: 1
+
+providers:
+  - name: marineflow
+    orgId: 1
+    folder: "MarineFlow"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

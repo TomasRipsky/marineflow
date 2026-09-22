@@ -2,9 +2,8 @@
 # MARINEFLOW — Spark Silver Layer Job
 # processing/spark_streaming/silver_positions.py
 #
-# Reads Bronze Parquet from GCS using Spark Structured Streaming and applies
-# all business transformations. Spark tracks processed files via checkpointing
-# so only new Bronze partitions are processed — no manual hour filtering needed.
+# Reads Bronze messages directly from the Kafka topic "vessel-positions-bronze" and applies
+# all business transformations.
 #
 # Field renaming (Bronze raw names → Silver semantic names):
 #   MMSI              → mmsi
@@ -26,10 +25,6 @@
 #   distance_to_port_km  — Haversine distance to nearest port
 #   speed_change_rate    — delta vs previous message per vessel
 #   heading_change_degrees — delta vs previous message per vessel
-#
-# Fields intentionally excluded (belong to vessel_metadata):
-#   vessel_type_normalized — from ShipStaticData, joined in Gold via dbt
-#   destination_clean      — from ShipStaticData, joined in Gold via dbt
 #
 # Run:
 #   spark-submit \
@@ -110,13 +105,21 @@ MID_MAP = {
 }
 
 OCEAN_REGIONS = [
-    (20,   45,  -10,  42,  "mediterranean"),
-    (35,   90,  -30,  60,  "north_sea_arctic"),
-    (-90, -30, -180, 180,  "southern_ocean"),
-    (-90,  90,   20,  80,  "indian_ocean"),
-    (-90,  90, -180, -30,  "atlantic_west"),
-    (-90,  90,  -30,  20,  "atlantic_east"),
-    (-90,  90,   80, 180,  "pacific"),
+    # Format: (lat_min, lat_max, lon_min, lon_max, "region_name")
+    # 1. Mediterranean Sea (Narrow bounding box tightly wrapping the sea)
+    (30, 46, -6, 42, "mediterranean"),
+    # 2. Arctic Ocean (From the polar circle up to the North Pole, full longitude wrap)
+    (65, 90, -180, 180, "arctic_ocean"),
+    # 3. Southern Ocean / Antarctic (Official IHO boundary south of 60°S)
+    (-90, -60, -180, 180, "southern_ocean"),
+    # 4. Indian Ocean (From East Africa to Western Australia, bounded north by Asia)
+    (-60, 30, 20, 147, "indian_ocean"),
+    # 5. Atlantic Ocean (Vertical corridor spanning both North and South Atlantic)
+    (-60, 65, -70, 20, "atlantic_ocean"),
+    # 6. Eastern Pacific Ocean (From the American coastlines to the Antimeridian)
+    (-60, 65, -180, -70, "pacific_east"),
+    # 7. Western Pacific Ocean (From Eastern Australia/Asia to the Antimeridian)
+    (-60, 65, 147, 180, "pacific_west"),
 ]
 
 MAJOR_PORTS = [
@@ -454,6 +457,7 @@ def main() -> None:
 
     query = (
         bronze_stream.writeStream
+        .queryName("silver_positions")
         .foreachBatch(process_micro_batch)
         .option("checkpointLocation", CHECKPOINT_DIR)
         .trigger(processingTime="30 seconds")

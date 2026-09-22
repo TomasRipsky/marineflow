@@ -4,11 +4,10 @@
 #
 # Reads vessel position messages directly from the Kafka topic
 # "vessel-positions" using Spark Structured Streaming's native Kafka source
-# (spark-sql-kafka) — push-based, no GCS landing zone, no file-polling.
+# (spark-sql-kafka) — push-based.
 #
 # The producer publishes the raw aisstream.io JSON as-is (see
-# ingestion/ais_producer/parser.py), so the message schema below is
-# unchanged from the old GCS-landing version — only the *source* changed.
+# ingestion/ais_producer/parser.py)
 #
 # Bronze responsibilities:
 #   1. Parse the Kafka message value (JSON) into structured columns
@@ -370,6 +369,7 @@ def main() -> None:
 
     query = (
         ais_stream.writeStream
+        .queryName("bronze_positions")
         .foreachBatch(process_micro_batch)
         .option("checkpointLocation", CHECKPOINT_DIR)
         .trigger(processingTime="30 seconds")

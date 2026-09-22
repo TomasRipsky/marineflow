@@ -1,6 +1,11 @@
 # =============================================================================
 # MARINEFLOW — Prometheus Configuration
 # monitoring/prometheus/prometheus.yml
+#
+# Scrapes each Spark driver's built-in Prometheus servlet
+# (spark.ui.prometheus.enabled=true), exposed at :4040/metrics/prometheus
+# inside the marineflow-net Docker network. No host port mapping needed —
+# Prometheus reaches each container directly by its Compose service name.
 # =============================================================================
 
 global:
@@ -11,13 +16,31 @@ global:
     environment: "dev"
 
 scrape_configs:
-  # Spark Master metrics
-  - job_name: "spark-master"
+  - job_name: "spark-bronze-positions"
+    metrics_path: "/metrics/prometheus/"
     static_configs:
-      - targets: ["spark-master:8080"]
+      - targets: ["spark-bronze:4040"]
+        labels: { job_role: "bronze", entity: "positions" }
 
-  # FastAPI application metrics (Phase 5)
-  - job_name: "marineflow-api"
+  - job_name: "spark-bronze-metadata"
+    metrics_path: "/metrics/prometheus/"
     static_configs:
-      - targets: ["fastapi:8000"]
-    metrics_path: "/metrics"
+      - targets: ["spark-bronze-metadata:4040"]
+        labels: { job_role: "bronze", entity: "metadata" }
+
+  - job_name: "spark-silver-positions"
+    metrics_path: "/metrics/prometheus/"
+    static_configs:
+      - targets: ["spark-silver-positions:4040"]
+        labels: { job_role: "silver", entity: "positions" }
+
+  - job_name: "spark-silver-metadata"
+    metrics_path: "/metrics/prometheus/"
+    static_configs:
+      - targets: ["spark-silver-metadata:4040"]
+        labels: { job_role: "silver", entity: "metadata" }
+
+  - job_name: "kafka-exporter"
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+        labels: { job_role: "kafka", entity: "lag" }
