@@ -6,8 +6,7 @@
 # "vessel-metadata" using Spark Structured Streaming's native Kafka source,
 # and transforms them into the Silver vessel_metadata table.
 #
-# The producer publishes the raw aisstream.io JSON as-is (same shape as
-# before — only the transport changed from Pub/Sub+GCS to Kafka).
+# The producer publishes the raw aisstream.io JSON as-is.
 #
 # Fields populated here:
 #   vessel_type_normalized  — AIS integer → semantic category
@@ -265,6 +264,7 @@ def main() -> None:
 
     query = (
         ais_stream.writeStream
+        .queryName("silver_metadata")
         .foreachBatch(process_micro_batch)
         .option("checkpointLocation", CHECKPOINT_DIR)
         .trigger(processingTime="30 seconds")
