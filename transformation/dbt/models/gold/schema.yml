@@ -115,15 +115,14 @@ models:
           name: nearest_port_not_empty_string
 
   # ---------------------------------------------------------------------------
-  # anomaly_candidates
+  # vessel_erratic_course
   # ---------------------------------------------------------------------------
-  - name: anomaly_candidates
+  - name: vessel_erratic_course
     description: >
-      Rule-based anomaly flags. Grain: one row per (mmsi, date_day, alert_type).
-      Primary input for the Isolation Forest anomaly detector in Phase 4.
+      Vessels with repeated sharp turns (>10/day). Grain: one row per (mmsi, date_day).
     columns:
       - name: alert_id
-        description: "Surrogate key — deterministic hash of (mmsi, date_day, alert_type)"
+        description: "Surrogate key — deterministic hash of (mmsi, date_day)"
         tests:
           - not_null
           - unique
@@ -136,15 +135,6 @@ models:
           - dbt_utils.expression_is_true:
               expression: "<= current_date()"
               name: date_day_not_in_future
-      - name: alert_type
-        tests:
-          - not_null
-          - accepted_values:
-              values:
-                - ais_gap
-                - speed_anomaly
-                - dark_vessel
-                - erratic_course
       - name: severity
         tests:
           - not_null
@@ -153,6 +143,12 @@ models:
                 - low
                 - medium
                 - high
+      - name: sharp_turns
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 10"
+              name: sharp_turns_above_detection_threshold
       - name: gold_processed_at
         tests:
           - not_null
@@ -165,11 +161,6 @@ models:
           combination_of_columns:
             - mmsi
             - date_day
-            - alert_type
-      - dbt_utils.expression_is_true:
-          expression: "not (alert_type = 'dark_vessel' and severity != 'high')"
-          name: dark_vessel_severity_must_be_high
-      # alert_id MD5 length — a nivel de modelo para evitar el prefijo automático
       - dbt_utils.expression_is_true:
           expression: "length(alert_id) = 32"
           name: alert_id_is_valid_md5

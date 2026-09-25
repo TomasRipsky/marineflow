@@ -11,8 +11,7 @@
 #
 # What this DAG DOES:
 #   - Verify new Silver data has arrived since the last run
-#   - Run dbt to materialize Gold models (vessel_activity_summary, port_traffic,
-#     anomaly_candidates)
+#   - Run dbt to materialize Gold models (vessel_activity_summary, port_traffic,etc)
 #   - Run dbt data quality tests
 #   - Daily: compact small Silver Parquet files into fewer larger files
 #
@@ -192,7 +191,7 @@ locally they run in dedicated Docker containers.
 
 ### Task flow
 1. **check_silver_data_arrived** — verify Silver has new data (last 2h)
-2. **dbt_run** — materialize `vessel_activity_summary`, `port_traffic`, `anomaly_candidates`
+2. **dbt_run** — materialize `vessel_activity_summary`, `port_traffic`, etc
 3. **dbt_test** — run data quality tests (not_null, unique, accepted_values)
 4. **compact_gcs** — merge small Silver Parquet files *(daily at 02:05 UTC only)*
 
@@ -219,7 +218,7 @@ or Delta Lake automatic compaction.
     dbt_batch = BashOperator(
         task_id="dbt_batch_models",
         bash_command=DBT_CMD.format(
-            "run --select vessel_activity_summary port_traffic anomaly_candidates"
+            "run --select vessel_activity_summary port_traffic"
         ),
         doc_md="Materialize batch Gold models — no inter-model dependencies.",
     )
