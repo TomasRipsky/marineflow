@@ -60,6 +60,28 @@ class DashboardShapeTest(unittest.TestCase):
                     self.assertTrue(any(re.fullmatch(name, j) for j in PROMETHEUS_JOBS), f"{path.name}: {name}")
 
 
+class ScrollAndDivisionTest(unittest.TestCase):
+    def test_the_map_does_not_capture_the_mouse_wheel(self):
+        panels = [p for p in load(GRAFANA / "dashboards/json/marineflow-live.json")["panels"] if p["type"] == "geomap"]
+        self.assertTrue(panels)
+        for p in panels:
+            self.assertFalse(p["options"]["controls"]["mouseWheelZoom"])
+            self.assertTrue(p["options"]["controls"]["showZoom"])
+
+    def test_no_panel_has_a_legend_table_with_its_own_scrollbar_over_four_series(self):
+        for path in DASHBOARDS:
+            for p in load(path)["panels"]:
+                if p["type"] == "timeseries" and p["options"]["legend"]["displayMode"] == "table":
+                    self.assertLessEqual(len(p["targets"]), 2, f"{path.name}: {p['title']}")
+
+    def test_ratios_guard_against_an_idle_denominator(self):
+        """An idle producer made 'Bronze rejects' render -Inf% (1 - x/0)."""
+        for name, title in [("marineflow-overview.json", "Bronze rejects"),
+                            ("marineflow-spark.json", "Headroom (processing / input)")]:
+            panel = next(p for p in load(GRAFANA / "dashboards/json" / name)["panels"] if p["title"] == title)
+            self.assertIn("> 0)", panel["targets"][0]["expr"], title)
+
+
 class ComposeWiringTest(unittest.TestCase):
     COMPOSE = (ROOT / "docker-compose.yml").read_text()
 

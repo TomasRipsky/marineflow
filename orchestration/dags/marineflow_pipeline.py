@@ -15,6 +15,8 @@
 #
 # What this DAG DOES:
 #   - Verify new Silver data has arrived since the last run
+#   - Rebuild the staging view stg_vessel_positions, so a change to it (or to the Silver
+#     schema it reads) reaches BigQuery; the gold models only read the deployed view
 #   - Run dbt to materialize Gold models (vessel_activity_summary, port_traffic,etc)
 #   - Run dbt data quality tests
 #
@@ -28,6 +30,8 @@
 # Task graph:
 #
 #   check_silver_data_arrived
+#             │
+#        dbt_staging
 #             │
 #   ┌─────────┼──────────────┬──────────────┐
 #   │         │              │              │
@@ -169,6 +173,16 @@ automatic compaction.
     DBT = "/home/airflow/.local/bin/dbt"
     DBT_CMD = f"cd {DBT_DIR} && {DBT} {{}} --profiles-dir {DBT_PROFILES} --target prod"
 
+    # ── 1b. dbt — staging view ─────────────────────────────────────────────
+    # Every gold model reads stg_vessel_positions. dbt does not rebuild a view that is only
+    # referenced, so without this task a change to the view (or a renamed Silver column) never
+    # reaches BigQuery and every gold model fails on the stale view.
+    dbt_staging = BashOperator(
+        task_id="dbt_staging",
+        bash_command=DBT_CMD.format("run --select stg_vessel_positions"),
+        doc_md="Rebuild the staging view (Silver positions joined with the latest metadata per vessel).",
+    )
+
     # ── 2. dbt — batch models (no dependencies between them) ───────────────
     dbt_batch = BashOperator(
         task_id="dbt_batch_models",
@@ -223,13 +237,15 @@ automatic compaction.
     #
     #   check_silver
     #        │
+    #   dbt_staging
+    #        │
     #   dbt_batch   ──┬── dbt_erratic ─────┐
     #   dbt_dark    ──┤                    │
     #   dbt_speed   ──┼── dbt_risk_score ──┤  (detection models run in parallel)
     #   dbt_loitering─┘                    │
     #                                 dbt_test
     #
-    check_silver >> [dbt_batch, dbt_dark, dbt_speed, dbt_loitering]
+    check_silver >> dbt_staging >> [dbt_batch, dbt_dark, dbt_speed, dbt_loitering]
     dbt_batch >> dbt_erratic
     [dbt_dark, dbt_speed, dbt_loitering] >> dbt_risk
     [dbt_erratic, dbt_risk] >> dbt_test
