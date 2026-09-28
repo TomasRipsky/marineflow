@@ -2,6 +2,7 @@
     materialized='incremental',
     unique_key='loiter_event_id',
     incremental_strategy='merge',
+    on_schema_change='sync_all_columns',
     partition_by={'field': 'event_date', 'data_type': 'date'},
     cluster_by=['mmsi', 'ocean_region']
 ) }}
@@ -16,7 +17,6 @@ with candidate_positions as (
         eez_country,
         nearest_port,
         is_in_port_zone,
-        distance_to_port_km,
         navigational_status,
         event_timestamp,
         date_day                                as event_date,
@@ -61,7 +61,6 @@ loiter_sessions as (
         avg(speed_over_ground)                                            as avg_speed_knots,
         -- Alta varianza de rumbo = círculos = señal fuerte de espera activa
         avg(abs(heading_change_degrees))                                  as avg_heading_change,
-        avg(distance_to_port_km)                                          as avg_distance_to_port_km,
         min(event_date)                                                   as event_date
     from candidate_positions
     group by 1,2,3,4,5,6,7,8,9,10
@@ -75,12 +74,5 @@ select
         when duration_minutes > 720 and avg_heading_change > 20 then 'HIGH'
         when duration_minutes > 360                             then 'MEDIUM'
         else                                                         'LOW'
-    end as risk_level,
-    -- Flag específico: potencial STS (lejos de puerto, mucho tiempo, dando vueltas)
-    case
-        when avg_distance_to_port_km > 50
-         and duration_minutes > 240
-         and avg_heading_change > 15   then true
-        else                                false
-    end as potential_sts_transfer
+    end as risk_level
 from loiter_sessions

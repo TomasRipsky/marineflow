@@ -297,7 +297,8 @@ models:
   # ---------------------------------------------------------------------------
   - name: vessel_loitering
     description: >
-      One row per loitering session. Primary signal for STS transfer detection.
+      One row per loitering session: a vessel moving slowly (0.1-4 kn) outside port zones
+      for more than 180 minutes inside the same 0.1 degree cell.
     columns:
       - name: loiter_event_id
         tests:
@@ -353,9 +354,6 @@ models:
           expression: "length(loiter_event_id) = 32"
           name: loiter_event_id_is_valid_md5
       - dbt_utils.expression_is_true:
-          expression: "not (potential_sts_transfer = true and avg_distance_to_port_km < 50)"
-          name: sts_flag_requires_offshore_position
-      - dbt_utils.expression_is_true:
           expression: "abs(timestamp_diff(window_end, window_start, minute) - duration_minutes) <= 1"
           name: duration_consistent_with_timestamps
 
@@ -394,11 +392,6 @@ models:
           - dbt_utils.expression_is_true:
               expression: ">= 0"
               name: spoofing_signals_non_negative
-      - name: sts_signals_30d
-        tests:
-          - dbt_utils.expression_is_true:
-              expression: ">= 0"
-              name: sts_signals_non_negative
       - name: dark_events_30d
         tests:
           - dbt_utils.expression_is_true:
@@ -416,6 +409,3 @@ models:
       - dbt_utils.expression_is_true:
           expression: "not (spoofing_signals_30d > 0 and risk_score < 15)"
           name: risk_score_reflects_spoofing_weight
-      - dbt_utils.expression_is_true:
-          expression: "sts_signals_30d <= loiter_events_30d"
-          name: sts_signals_subset_of_loiter_events
