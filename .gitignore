@@ -8,6 +8,8 @@
 *.json
 !package.json
 !package-lock.json
+# Generated Grafana dashboards (monitoring/grafana/generate_dashboards.py) are code, not secrets.
+!monitoring/grafana/dashboards/json/*.json
 gcp-credentials*.json
 *-credentials.json
 *-keyfile.json

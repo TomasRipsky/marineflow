@@ -1,7 +1,8 @@
-# Auto-provisions Prometheus as Grafana's datasource on startup — no click-ops.
+# Auto-provisions the datasources Grafana needs on startup — no click-ops.
 apiVersion: 1
 
 datasources:
+  # Metrics: the Spark drivers and kafka-exporter, scraped by Prometheus.
   - name: Prometheus
     uid: prometheus
     type: prometheus
@@ -9,3 +10,16 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: false
+
+  # Live messages read straight from Kafka (the vessel map and the alerts table).
+  # It talks to the broker's internal Docker listener, the same one Spark uses.
+  - name: Kafka
+    uid: kafka
+    type: hamedkarbasi93-kafka-datasource
+    access: proxy
+    editable: false
+    jsonData:
+      bootstrapServers: kafka:29092
+      clientId: grafana-marineflow
+      securityProtocol: PLAINTEXT
+      healthcheckTimeout: 2000
