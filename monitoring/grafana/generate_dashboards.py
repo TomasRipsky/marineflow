@@ -63,6 +63,12 @@ def topic_rate(topic_regex, window="1m"):
 
 
 ALL_TOPICS = "vessel-.*|dead-letter-queue"
+# Kafka's own internal topics (__consumer_offsets, __transaction_state) are not part of the
+# pipeline. __consumer_offsets in particular carries 50 partitions by default, so leaving it
+# unfiltered inflates "total partitions" panels and shows up as a stray row everywhere else —
+# something in the stack (the Grafana Kafka plugin, a console consumer run with --group) is
+# enough to make the broker create it.
+NOT_INTERNAL = 'topic!~"__.*"' 
 
 
 # ---------------------------------------------------------------------------------------------
@@ -258,7 +264,8 @@ def overview():
                      "above input means the jobs keep up; the per-job view is in the Spark dashboard."))
 
     d.add(bargauge("Messages retained per topic",
-                   "sum by (topic) (kafka_topic_partition_current_offset - kafka_topic_partition_oldest_offset)",
+                   'sum by (topic) (kafka_topic_partition_current_offset{%s} - kafka_topic_partition_oldest_offset{%s})'
+                   % (NOT_INTERNAL, NOT_INTERNAL),
                    0, 16, 8, 8, description="Messages currently stored in each topic.", overrides=topic_overrides(),
                    th=thresholds("blue")))
     d.add(state_timeline("Service availability", 'up{job=~"spark-.*|kafka-exporter"}', 8, 16, 8, 8, "{{job}}",
@@ -407,10 +414,10 @@ def kafka_dashboard():
                    "commit its offsets to Kafka, so consumer-group lag is not available; compare the raw and bronze "
                    "topics instead.", 0, 0, 24, 3))
     d.add(stat("Brokers", "kafka_brokers", 0, 3, w=6, th=thresholds("red", (1, "green")), spark_line=False))
-    d.add(stat("Topics", "count(count by (topic) (kafka_topic_partitions))", 6, 3, w=6, th=thresholds("blue"),
+    d.add(stat("Topics", 'count(count by (topic) (kafka_topic_partitions{%s}))' % NOT_INTERNAL, 6, 3, w=6, th=thresholds("blue"),
                spark_line=False))
-    d.add(stat("Partitions", "sum(kafka_topic_partitions)", 12, 3, w=6, th=thresholds("blue"), spark_line=False))
-    d.add(stat("Under-replicated", "sum(kafka_topic_partition_under_replicated_partition)", 18, 3, w=6,
+    d.add(stat("Partitions", 'sum(kafka_topic_partitions{%s})' % NOT_INTERNAL, 12, 3, w=6, th=thresholds("blue"), spark_line=False))
+    d.add(stat("Under-replicated", 'sum(kafka_topic_partition_under_replicated_partition{%s})' % NOT_INTERNAL, 18, 3, w=6,
                th=thresholds("green", (1, "red")), spark_line=False))
 
     d.add(timeseries("Messages per second", [target(topic_rate(ALL_TOPICS), "{{topic}}")], 0, 7, 12, 9,
@@ -421,7 +428,8 @@ def kafka_dashboard():
                      12, 7, 12, 9, overrides=topic_overrides(), fill=8,
                      description="Cumulative offset per topic since it was created."))
     d.add(bargauge("Messages retained per topic",
-                   "sum by (topic) (kafka_topic_partition_current_offset - kafka_topic_partition_oldest_offset)",
+                   'sum by (topic) (kafka_topic_partition_current_offset{%s} - kafka_topic_partition_oldest_offset{%s})'
+                   % (NOT_INTERNAL, NOT_INTERNAL),
                    0, 16, 12, 8, overrides=topic_overrides()))
     d.add(bargauge("Balance across partitions (vessel-positions)",
                    'kafka_topic_partition_current_offset{topic="vessel-positions"}', 12, 16, 12, 8,
@@ -429,9 +437,9 @@ def kafka_dashboard():
                    description="Messages are keyed by MMSI, so a vessel always lands in the same partition."))
 
     d.add({"type": "table", "title": "Topic inventory", "datasource": PROM, "gridPos": grid(0, 24, 24, 9),
-           "targets": [target("max by (topic) (kafka_topic_partitions)", "", "A", instant=True, fmt="table"),
-                       target("sum by (topic) (kafka_topic_partition_current_offset - kafka_topic_partition_oldest_offset)",
-                              "", "B", instant=True, fmt="table"),
+           "targets": [target('max by (topic) (kafka_topic_partitions{%s})' % NOT_INTERNAL, "", "A", instant=True, fmt="table"),
+                       target('sum by (topic) (kafka_topic_partition_current_offset{%s} - kafka_topic_partition_oldest_offset{%s})'
+                              % (NOT_INTERNAL, NOT_INTERNAL), "", "B", instant=True, fmt="table"),
                        target(topic_rate(ALL_TOPICS, "5m") + " * 60", "", "C", instant=True, fmt="table")],
            "transformations": [
                {"id": "merge", "options": {}},

@@ -20,7 +20,7 @@
 | **Streaming** | 5 Spark Structured Streaming jobs (bronze ×2, silver ×2, hot alerts) and 6 Kafka topics |
 | **Batch** | 1 dbt project: 1 staging view + 7 gold models, **104 data tests**; 1 safe compaction job |
 | **Orchestration** | 1 Airflow DAG, hourly, 9 tasks |
-| **Quality** | **84 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
+| **Quality** | **85 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
 | **Infrastructure** | Terraform (3 modules wired in: IAM, GCS, BigQuery), 14 Docker Compose services |
 | **Reference data** | 65 MID codes → 35 flag states · 79 AIS ship-type codes → 11 categories · 13 navigation statuses · 15 port zones · 11 ocean boxes → 7 regions |
 
@@ -428,7 +428,7 @@ Today the jobs run with **your own credentials** (Application Default Credential
 
 ```mermaid
 flowchart LR
-    change["Change"] --> unit["84 unit tests<br/>no Spark, no GCP"]
+    change["Change"] --> unit["85 unit tests<br/>no Spark, no GCP"]
     unit --> smoke["3 Spark smoke tests<br/>real Spark and Parquet, in the project image"]
     smoke --> ci["GitHub Actions<br/>compile, tests, dbt parse"]
     ci --> main["main"]
@@ -528,6 +528,7 @@ marineflow/
 - **The reference lookups are coarse on purpose.** Flags come from 65 MIDs (35 countries); other vessels have a null flag. Ocean regions are bounding boxes: the Black Sea, the Sea of Marmara and the two sides of Central America are not modelled. `port_name`, `port_country` and `distance_to_port_km` only exist inside 0.3–0.5° boxes around 15 ports: `port_name` is the port whose zone contains the position (not the nearest port), `port_country` is that port's country (not an exclusive economic zone), and the distance uses 111 km per degree without a latitude correction. `reappeared_in_other_port` needs both ends of a gap to be inside port zones, so it only catches port-to-port gaps.
 - **There is no ship-to-ship (STS) transfer detection.** An earlier flag could never be true and was removed. A real version needs a port catalogue (for example the World Port Index) loaded as a dbt seed and a BigQuery geospatial join; 15 ports are far too few to say "far from any port".
 - **Small files pile up** until you run the compaction, which is manual. Bronze is never compacted.
+- **No process supervisor for the Spark jobs.** They are five separate `spark-submit` processes in `-it` terminals; nothing restarts a crashed one, and on a memory-constrained Docker Desktop VM the kernel OOM-killer can pick one off silently (`docker inspect <container> --format '{{.State.OOMKilled}}'` tells you). A dead job shows up as a missing series on the dashboards and, if it is Hot Alerts, as `vessel-alerts` going quiet.
 - **The hot path has one speed limit** (35 kn) and no Prometheus target.
 - **aisstream.io is in beta**, with no SLA. The producer retries with backoff and exits after 10 failed attempts.
 - **dbt `dev` and `prod` share a dataset.** Both targets point at `marineflow_gold`, so a local `dbt run` overwrites what Airflow produced. There is no separate development environment.
