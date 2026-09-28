@@ -73,10 +73,10 @@ models:
   # ---------------------------------------------------------------------------
   - name: port_traffic
     description: >
-      Daily traffic analysis per port. Grain: one row per (nearest_port, date_day).
+      Daily traffic analysis per port. Grain: one row per (port_name, date_day).
       Used for port congestion monitoring and route planning analytics.
     columns:
-      - name: nearest_port
+      - name: port_name
         description: "Port name"
         tests:
           - not_null
@@ -108,11 +108,11 @@ models:
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
-            - nearest_port
+            - port_name
             - date_day
       - dbt_utils.expression_is_true:
-          expression: "length(trim(nearest_port)) > 0"
-          name: nearest_port_not_empty_string
+          expression: "length(trim(port_name)) > 0"
+          name: port_name_not_empty_string
       - dbt_utils.expression_is_true:
           expression: "cargo_vessels + tanker_vessels + passenger_vessels + fishing_vessels + tug_vessels + special_craft_vessels + sailing_or_pleasure_vessels + high_speed_craft_vessels + other_vessels = unique_vessels"
           name: vessel_type_breakdown_sums_to_unique_vessels

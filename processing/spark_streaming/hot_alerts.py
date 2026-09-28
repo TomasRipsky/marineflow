@@ -4,8 +4,8 @@
 #
 # Speed layer (Lambda architecture) — complements, does not replace, the
 # batch/cold path in dbt (vessel_dark_events.sql, vessel_speed_anomalies.sql).
-# Those remain the authoritative, richer analytics (geospatial context, EEZ
-# crossing, graduated severity). This job exists purely for early warning
+# Those remain the authoritative, richer analytics (geospatial displacement,
+# port-zone context, graduated severity). This job exists purely for early warning
 # with sub-minute latency on the two signals where that actually matters.
 #
 # Source:  Kafka topic vessel-positions-bronze (flattened, Bronze output)

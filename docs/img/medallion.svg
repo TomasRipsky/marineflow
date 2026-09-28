@@ -63,7 +63,7 @@
   <text class="t" x="440" y="374">· GCS silver/  (Parquet, by partition_date)</text>
   <text class="sec" x="440" y="404">EXAMPLE COLUMNS</text>
   <text class="m" x="440" y="422">mmsi · latitude · speed_over_ground</text>
-  <text class="m" x="440" y="440">flag_country · ocean_region · nearest_port</text>
+  <text class="m" x="440" y="440">flag_country · ocean_region · port_name</text>
   <text class="m" x="440" y="458">is_in_port_zone · event_timestamp</text>
 
   <!-- GOLD -->

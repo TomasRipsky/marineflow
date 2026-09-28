@@ -62,6 +62,11 @@ class NumbersTest(unittest.TestCase):
         self.assertIn(f"{count} unit tests", (ROOT / "docs/img/architecture.svg").read_text())
         self.assertIn(f"{count} unit tests", README.split("## 10. Quality and CI", 1)[1])
 
+    def test_smoke_test_count(self):
+        smoke = len(list((ROOT / "tests/smoke").glob("*_smoke.py")))
+        self.assertIn(f"{smoke} Spark smoke tests", README)
+        self.assertIn(f"{smoke} Spark smoke tests", (ROOT / "docs/img/architecture.svg").read_text())
+
     def test_dag_tasks(self):
         dag = (ROOT / "orchestration/dags/marineflow_pipeline.py").read_text()
         tasks = re.findall(r'task_id="(\w+)"', dag)

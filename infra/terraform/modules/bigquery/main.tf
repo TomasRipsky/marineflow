@@ -201,8 +201,8 @@ resource "google_bigquery_table" "vessel_positions_clean" {
       { name = "latitude",               type = "FLOAT64",   mode = "NULLABLE" },
       { name = "longitude",              type = "FLOAT64",   mode = "NULLABLE" },
       { name = "ocean_region",           type = "STRING",    mode = "NULLABLE" },
-      { name = "nearest_port",           type = "STRING",    mode = "NULLABLE" },
-      { name = "eez_country",            type = "STRING",    mode = "NULLABLE" },
+      { name = "port_name",           type = "STRING",    mode = "NULLABLE" },
+      { name = "port_country",            type = "STRING",    mode = "NULLABLE" },
       { name = "is_in_port_zone",        type = "BOOLEAN",   mode = "NULLABLE" },
       { name = "distance_to_port_km",    type = "FLOAT64",   mode = "NULLABLE" },
       # --- Movement ---

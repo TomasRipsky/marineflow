@@ -14,7 +14,7 @@ with dark as (
         sum(case when severity = 'CRITICAL' then 3
                  when severity = 'HIGH'     then 2
                  else                            1 end)                       as dark_score,
-        countif(crossed_eez_during_gap = true)                               as eez_crossing_gaps
+        countif(reappeared_in_other_port = true)                               as port_change_gaps
     from {{ ref('vessel_dark_events') }}
     where event_date >= date_sub(current_date(), interval 30 day)
     group by 1
@@ -48,7 +48,7 @@ vessels as (
         vessel_type_normalized,
         flag_country,
         -- Last port zone the vessel was seen in (null if it never entered one of the 15 port boxes)
-        last_value(nearest_port ignore nulls) over (
+        last_value(port_name ignore nulls) over (
             partition by mmsi order by event_timestamp
             rows between unbounded preceding and unbounded following
         ) as last_known_port
@@ -64,13 +64,13 @@ select
     v.flag_country,
     v.last_known_port,
     coalesce(d.dark_events,    0)                                as dark_events_30d,
-    coalesce(d.eez_crossing_gaps, 0)                             as eez_crossing_gaps_30d,
+    coalesce(d.port_change_gaps, 0)                             as port_change_gaps_30d,
     coalesce(s.speed_anomalies, 0)                               as speed_anomalies_30d,
     coalesce(s.spoofing_signals, 0)                              as spoofing_signals_30d,
     coalesce(l.loiter_events,  0)                                as loiter_events_30d,
     -- Weights: spoofing, and dark events that end in a different port zone, weigh more (clearer intent)
     coalesce(d.dark_score, 0)          * 10
-    + coalesce(d.eez_crossing_gaps, 0) * 8
+    + coalesce(d.port_change_gaps, 0) * 8
     + coalesce(s.spoofing_signals, 0)  * 15
     + coalesce(s.speed_anomalies, 0)   * 5
     + coalesce(l.loiter_events, 0)     * 3                       as risk_score,

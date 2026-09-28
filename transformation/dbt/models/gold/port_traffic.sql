@@ -7,9 +7,9 @@
 --   - What vessel types dominate Singapore?
 --   - Which ports see the most sudden manoeuvres?
 --
--- Grain: one row per (nearest_port, date_day)
+-- Grain: one row per (port_name, date_day)
 -- Partitioned by: date_day
--- Clustered by: nearest_port
+-- Clustered by: port_name
 -- =============================================================================
 
 {{
@@ -20,22 +20,22 @@
             "field": "date_day",
             "data_type": "date"
         },
-        cluster_by=["nearest_port", "eez_country"],
-        description="Daily port traffic analysis — grain: (nearest_port, date_day)"
+        cluster_by=["port_name", "port_country"],
+        description="Daily port traffic analysis — grain: (port_name, date_day)"
     )
 }}
 
 with positions as (
     select * from {{ ref('stg_vessel_positions') }}
-    where nearest_port is not null
+    where port_name is not null
 ),
 
 -- Detect port entries: vessel transitions from outside to inside port zone
 port_events as (
     select
         mmsi,
-        nearest_port,
-        eez_country,
+        port_name,
+        port_country,
         date_day,
         event_timestamp,
         is_in_port_zone,
@@ -54,8 +54,8 @@ port_events as (
 
 port_entries as (
     select
-        nearest_port,
-        eez_country,
+        port_name,
+        port_country,
         date_day,
         mmsi,
         vessel_type_normalized,
@@ -71,8 +71,8 @@ port_entries as (
 
 daily_port_traffic as (
     select
-        p.nearest_port,
-        p.eez_country,
+        p.port_name,
+        p.port_country,
         p.date_day,
 
         -- Volume
@@ -119,11 +119,11 @@ daily_port_traffic as (
 
     from positions p
     left join port_entries e
-        on  p.nearest_port = e.nearest_port
+        on  p.port_name = e.port_name
         and p.date_day     = e.date_day
         and p.mmsi         = e.mmsi
 
-    group by p.nearest_port, p.eez_country, p.date_day
+    group by p.port_name, p.port_country, p.date_day
 )
 
 select * from daily_port_traffic

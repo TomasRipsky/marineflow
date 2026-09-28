@@ -57,7 +57,7 @@ class DbtModelsTest(unittest.TestCase):
         """vessel_loitering only looks outside port zones, where Silver leaves these three null."""
         sql = (DBT_DIR / "models/gold/vessel_loitering.sql").read_text()
         code = "\n".join(line.split("--")[0] for line in sql.splitlines())   # ignore comments
-        for column in ("nearest_port", "eez_country", "distance_to_port_km"):
+        for column in ("port_name", "port_country", "distance_to_port_km"):
             with self.subTest(column=column):
                 self.assertNotIn(column, code)
 
@@ -71,7 +71,7 @@ class DbtModelsTest(unittest.TestCase):
 
     def test_risk_score_still_weights_the_remaining_signals(self):
         sql = (DBT_DIR / "models/gold/vessel_risk_score.sql").read_text()
-        for term in ("dark_score", "eez_crossing_gaps", "spoofing_signals", "speed_anomalies", "loiter_events"):
+        for term in ("dark_score", "port_change_gaps", "spoofing_signals", "speed_anomalies", "loiter_events"):
             self.assertIn(term, sql)
 
 
