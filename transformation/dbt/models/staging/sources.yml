@@ -26,6 +26,20 @@ sources:
             tests: [not_null]
           - name: vessel_type_normalized
             description: "Normalized vessel type category"
+            tests:
+              - accepted_values:
+                  values:
+                    - cargo
+                    - tanker
+                    - passenger
+                    - fishing
+                    - tug
+                    - special_craft
+                    - sailing_or_pleasure
+                    - high_speed_craft
+                    - wing_in_ground
+                    - other
+                    - unknown
           - name: destination_clean
             description: "Cleaned destination free text"
           - name: processing_timestamp

@@ -57,6 +57,8 @@ type_limits as (
         struct('tug',14.0),
         struct('special_craft',20.0), 
         struct('sailing_or_pleasure',20.0), 
+        struct('high_speed_craft',50.0),
+        struct('wing_in_ground',100.0),
         struct('other',35.0),
         struct('unknown',35.0)
     ])

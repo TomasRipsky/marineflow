@@ -44,6 +44,7 @@ import uuid
 
 import structlog
 from dotenv import load_dotenv
+from reference_data import MID_MAP
 
 load_dotenv()
 
@@ -81,6 +82,8 @@ MAX_OFFSETS_PER_TRIGGER = int(os.getenv("SILVER_MAX_OFFSETS_PER_TRIGGER", "1000"
 # Reference data
 # =============================================================================
 
+# AIS navigational status (ITU-R M.1371). Reserved codes 9, 10 and 13 are
+# emitted as "unknown_<code>" by rename_bronze_fields().
 NAV_STATUS_MAP = {
     0:  "under_way_engine",
     1:  "at_anchor",
@@ -91,38 +94,39 @@ NAV_STATUS_MAP = {
     6:  "aground",
     7:  "engaged_in_fishing",
     8:  "under_way_sailing",
+    11: "towing_astern",
+    12: "pushing_or_towing_alongside",
+    14: "ais_sart_active",
     15: "undefined",
 }
 
-MID_MAP = {
-    "211": "DE", "219": "DK", "224": "ES", "225": "ES",
-    "226": "FR", "228": "FR", "232": "GB", "233": "GB",
-    "244": "NL", "245": "NL", "247": "IT", "248": "MT",
-    "255": "PT", "257": "NO", "265": "SE", "266": "SE",
-    "269": "CH", "271": "TR", "273": "RU", "276": "EE",
-    "277": "LV", "278": "LT", "303": "US", "338": "US",
-    "366": "US", "367": "US", "368": "US", "369": "US",
-    "412": "CN", "413": "CN", "414": "CN", "416": "TW",
-    "431": "JP", "432": "JP", "440": "KR", "441": "KR",
-    "477": "HK", "518": "NZ", "503": "AU", "636": "LR",
-    "657": "TZ", "667": "GN", "710": "BR", "720": "AR",
-}
-
+# Coarse bounding boxes: (lat_min, lat_max, lon_min, lon_max, "region_name").
+# FIRST MATCH WINS, so the specific boxes (Mediterranean) come before the
+# ocean-wide ones they overlap. Anything that matches no box is "open_ocean".
 OCEAN_REGIONS = [
-    # Format: (lat_min, lat_max, lon_min, lon_max, "region_name")
-    # 1. Mediterranean Sea (Narrow bounding box tightly wrapping the sea)
-    (30, 46, -6, 42, "mediterranean"),
+    # 1. Mediterranean Sea, as two boxes: a single 30-46N / 6W-42E box would
+    #    also swallow the Bay of Biscay and the Black Sea.
+    (30, 37, -6, 37, "mediterranean"),      # southern basin: Gibraltar, North Africa, Levant
+    (37, 46, -1.2, 27.5, "mediterranean"),  # northern basin: Iberian east coast, Adriatic, Aegean
     # 2. Arctic Ocean (From the polar circle up to the North Pole, full longitude wrap)
     (65, 90, -180, 180, "arctic_ocean"),
     # 3. Southern Ocean / Antarctic (Official IHO boundary south of 60°S)
     (-90, -60, -180, 180, "southern_ocean"),
-    # 4. Indian Ocean (From East Africa to Western Australia, bounded north by Asia)
+    # 4. Western North Atlantic: the plain Atlantic box below stops at 70°W and would
+    #    hand the US East Coast, the Gulf of Mexico and the Caribbean to the Pacific.
+    #    Both boxes start east of the Pacific coasts of Mexico and Central America.
+    (18, 50, -98, -60, "atlantic_ocean"),   # US East Coast, Gulf of Mexico, Nova Scotia
+    (9.2, 18, -88, -60, "atlantic_ocean"),  # Caribbean
+    # 5. East Asian marginal seas (South China, East China, Yellow, Japan) belong to
+    #    the Pacific, not to the Indian Ocean box below.
+    (1, 60, 103, 147, "pacific_west"),
+    # 6. Indian Ocean (From East Africa to Western Australia, bounded north by Asia)
     (-60, 30, 20, 147, "indian_ocean"),
-    # 5. Atlantic Ocean (Vertical corridor spanning both North and South Atlantic)
+    # 7. Atlantic Ocean (Vertical corridor spanning both North and South Atlantic)
     (-60, 65, -70, 20, "atlantic_ocean"),
-    # 6. Eastern Pacific Ocean (From the American coastlines to the Antimeridian)
+    # 8. Eastern Pacific Ocean (From the American coastlines to the Antimeridian)
     (-60, 65, -180, -70, "pacific_east"),
-    # 7. Western Pacific Ocean (From Eastern Australia/Asia to the Antimeridian)
+    # 9. Western Pacific Ocean (From Eastern Australia/Asia to the Antimeridian)
     (-60, 65, 147, 180, "pacific_west"),
 ]
 
@@ -138,7 +142,7 @@ MAJOR_PORTS = [
     (-23.9, -46.3,   0.5, "Santos",      "BR"),
     (18.9,   72.8,   0.5, "Mumbai",      "IN"),
     (25.2,   55.3,   0.3, "Dubai",       "AE"),
-    (30.1,   32.3,   0.3, "Port Said",   "EG"),
+    (31.26,  32.3,   0.3, "Port Said",   "EG"),
     (37.9,   23.7,   0.3, "Piraeus",     "GR"),
     (41.3,    2.1,   0.3, "Barcelona",   "ES"),
     (43.3,    5.4,   0.3, "Marseille",   "FR"),
@@ -240,7 +244,9 @@ def enrich_geospatial(df):
     from pyspark.sql.types import StringType
 
     ocean_expr = F.lit("open_ocean")
-    for min_lat, max_lat, min_lon, max_lon, region in OCEAN_REGIONS:
+    # Each when() wraps the previous expression, so the last one built is
+    # evaluated first: iterate in reverse to get "first match wins".
+    for min_lat, max_lat, min_lon, max_lon, region in reversed(OCEAN_REGIONS):
         ocean_expr = F.when(
             F.col("latitude").between(min_lat, max_lat)
             & F.col("longitude").between(min_lon, max_lon),

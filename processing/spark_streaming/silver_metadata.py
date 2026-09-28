@@ -27,6 +27,7 @@ import uuid
 
 import structlog
 from dotenv import load_dotenv
+from reference_data import MID_MAP
 
 load_dotenv()
 
@@ -64,36 +65,31 @@ MAX_OFFSETS_PER_TRIGGER = int(os.getenv("METADATA_MAX_OFFSETS_PER_TRIGGER", "100
 # Reference data
 # =============================================================================
 
-# AIS vessel type codes → normalized category (ITU-R M.1371-5, Table 20)
+# AIS ship type codes → normalized category (ITU-R M.1371-5, Table 20).
+# Every category emitted here needs a speed limit in
+# transformation/dbt/models/gold/vessel_speed_anomalies.sql and must appear in
+# the accepted_values test of transformation/dbt/models/staging/sources.yml.
+# Non-null codes not listed (1-19 and the reserved 38-39) fall back to "other"
+# in decode_and_transform().
 VESSEL_TYPE_MAP = {
+    0: "unknown",                                        # not available
+    **dict.fromkeys(range(20, 30), "wing_in_ground"),
+    30: "fishing",
+    **dict.fromkeys((31, 32), "tug"),                    # towing (32: large tow)
+    **dict.fromkeys((33, 34, 35), "special_craft"),      # dredging/underwater ops, diving ops, military ops
+    **dict.fromkeys((36, 37), "sailing_or_pleasure"),
+    **dict.fromkeys(range(40, 50), "high_speed_craft"),
+    **dict.fromkeys(range(50, 60), "special_craft"),     # pilot, SAR, port tender, law enforcement, medical, ...
+    52: "tug",                                           # overrides the range above
+    **dict.fromkeys(range(60, 70), "passenger"),
     **dict.fromkeys(range(70, 80), "cargo"),
     **dict.fromkeys(range(80, 90), "tanker"),
-    **dict.fromkeys(range(60, 70), "passenger"),
-    **dict.fromkeys(range(30, 36), "fishing"),
-    **dict.fromkeys(range(50, 60), "special_craft"),
-    52: "tug",  # AIS type 52 = Tug; must come after the range above to override it
-    **dict.fromkeys(range(36, 40), "sailing_or_pleasure"),
-    **dict.fromkeys(range(20, 30), "wing_in_ground"),
     **dict.fromkeys(range(90, 100), "other"),
 }
 
 DESTINATION_JUNK = {
     "", "NULL", "NONE", "N/A", "NA", "NIL", "UNKNOWN",
     "?", ".", "0", "00", "000", "TBD", "TBA",
-}
-
-MID_MAP = {
-    "211": "DE", "219": "DK", "224": "ES", "225": "ES",
-    "226": "FR", "228": "FR", "232": "GB", "233": "GB",
-    "244": "NL", "245": "NL", "247": "IT", "248": "MT",
-    "255": "PT", "257": "NO", "265": "SE", "266": "SE",
-    "269": "CH", "271": "TR", "273": "RU", "276": "EE",
-    "277": "LV", "278": "LT", "303": "US", "338": "US",
-    "366": "US", "367": "US", "368": "US", "369": "US",
-    "412": "CN", "413": "CN", "414": "CN", "416": "TW",
-    "431": "JP", "432": "JP", "440": "KR", "441": "KR",
-    "477": "HK", "518": "NZ", "503": "AU", "636": "LR",
-    "657": "TZ", "667": "GN", "710": "BR", "720": "AR",
 }
 
 

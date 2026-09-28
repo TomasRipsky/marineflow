@@ -113,6 +113,9 @@ models:
       - dbt_utils.expression_is_true:
           expression: "length(trim(nearest_port)) > 0"
           name: nearest_port_not_empty_string
+      - dbt_utils.expression_is_true:
+          expression: "cargo_vessels + tanker_vessels + passenger_vessels + fishing_vessels + tug_vessels + special_craft_vessels + sailing_or_pleasure_vessels + high_speed_craft_vessels + other_vessels = unique_vessels"
+          name: vessel_type_breakdown_sums_to_unique_vessels
 
   # ---------------------------------------------------------------------------
   # vessel_erratic_course

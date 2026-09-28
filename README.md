@@ -168,10 +168,10 @@ The hot path uses one global speed limit (35 kn); the vessel-type-specific limit
 |---|---|---|---|
 | `stg_vessel_positions` | view (Silver dataset) | position | Staging — joins Silver positions with the latest Silver metadata per MMSI (vessel type, destination, IMO, draught) and drops invalid coordinates and MMSIs starting with `0`. Single entry point for every Gold model |
 | `vessel_activity_summary` | table | (mmsi, day) | Daily activity: distance, positions in port vs at sea, speed profile, sudden speed changes, sharp turns (heading change > 45°), AIS gaps > 30 / > 120 min |
-| `port_traffic` | table | (port, day) | Unique vessels, vessel-type breakdown, port entries, speed profile inside the port zone |
+| `port_traffic` | table | (port, day) | Unique vessels, vessel-type breakdown (distinct vessels per category; the columns sum to `unique_vessels`), port entries, speed profile inside the port zone |
 | `vessel_erratic_course` | table | (mmsi, day) | Vessels with more than 10 sharp turns in a day and average speed above 1 kn (rules out vessels swinging at anchor); severity `medium` above 10 turns, `high` above 20. Built on `vessel_activity_summary` |
 | `vessel_dark_events` | incremental (merge) | event | Every AIS gap over 120 minutes, with real geospatial displacement (`ST_DISTANCE`). Severity: `CRITICAL` (> 720 min and > 100 km), `HIGH` (> 360 min and > 50 km), `MEDIUM`. Includes a port-change flag (`crossed_eez_during_gap`) — the rich, contextual version of what Hot Alerts detects instantly |
-| `vessel_speed_anomalies` | incremental (merge) | event | Calculated (great-circle) speed vs. reported speed, against vessel-type-specific limits (cargo 25 kn, tanker 18, fishing 15, passenger 30, tug 14, unknown 35, …). Types: `GPS_SPOOFING`, `IMPOSSIBLE_SPEED`, `SUDDEN_ACCELERATION` |
+| `vessel_speed_anomalies` | incremental (merge) | event | Calculated (great-circle) speed vs. reported speed, against vessel-type-specific limits (cargo 25 kn, tanker 18, fishing 15, passenger 30, tug 14, high-speed craft 50, wing-in-ground 100, other/unknown 35, …); every category Silver can emit has a limit. Types: `GPS_SPOOFING`, `IMPOSSIBLE_SPEED`, `SUDDEN_ACCELERATION` |
 | `vessel_loitering` | incremental (merge) | session | Vessels moving slowly (0.1–4 kn) for more than 180 minutes inside the same 0.1° cell, outside port zones. Flags `potential_sts_transfer` (offshore, long, turning) and grades `risk_level` |
 | `vessel_risk_score` | incremental (merge) | (mmsi, score day) | Daily snapshot of a weighted score over the trailing 30 days, aggregating `vessel_dark_events` + `vessel_speed_anomalies` + `vessel_loitering` |
 
@@ -397,6 +397,16 @@ Each job runs `local[2]` inside its own container, and the jobs are started manu
 ### dbt `dev` and `prod` share the same dataset
 
 Both targets in `transformation/dbt/profiles.yml` point to the same project and dataset (`marineflow_gold`); only `threads` and `priority` differ. A local `dbt run` overwrites what the Airflow DAG produced.
+
+### Silver reference lookups are coarse
+
+- `flag_country` comes from a partial MID table (`processing/spark_streaming/reference_data.py`, about 35 countries, shared by both Silver jobs); any other flag is null.
+- `ocean_region` uses bounding boxes where the first match wins. The Black Sea, the Sea of Marmara and the Pacific/Caribbean sides of Central America are not modelled properly.
+- `nearest_port`, `eez_country` and `distance_to_port_km` only exist inside a 0.3–0.5° box around 15 major ports, and `eez_country` is that port's country, not a real EEZ.
+
+### `potential_sts_transfer` never fires
+
+`vessel_loitering` only looks at positions outside port zones, but `distance_to_port_km` is null outside a port box, so `avg_distance_to_port_km > 50` can never be true. Fixing it needs a distance to the nearest port for every position.
 
 ### aisstream.io is BETA
 
