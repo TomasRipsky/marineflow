@@ -160,3 +160,7 @@ test/
 # -----------------------------------------------------------------------------
 docs/_build/
 site/
+graphify-out/
+CLAUDE.md
+.claude/
+COMANDOS VARIOS.txt
