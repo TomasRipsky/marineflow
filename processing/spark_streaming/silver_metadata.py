@@ -71,6 +71,7 @@ VESSEL_TYPE_MAP = {
     **dict.fromkeys(range(60, 70), "passenger"),
     **dict.fromkeys(range(30, 36), "fishing"),
     **dict.fromkeys(range(50, 60), "special_craft"),
+    52: "tug",  # AIS type 52 = Tug; must come after the range above to override it
     **dict.fromkeys(range(36, 40), "sailing_or_pleasure"),
     **dict.fromkeys(range(20, 30), "wing_in_ground"),
     **dict.fromkeys(range(90, 100), "other"),
