@@ -102,7 +102,7 @@ services:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
-  # Spark Silver Positions — reads from Kafka vessel-positions-bronze
+  # Spark Silver Positions — reads Kafka vessel-positions-bronze, writes GCS silver/vessel_positions
   # ---------------------------------------------------------------------------
   spark-silver-positions:
     build:

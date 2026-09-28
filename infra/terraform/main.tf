@@ -14,7 +14,7 @@ terraform {
   }
 
   # Remote backend — Terraform state stored in GCS
-  # This bucket was created manually before terraform init (see README)
+  # The bucket must exist before terraform init (see modules/gcs/main.tf and the README)
   backend "gcs" {
     bucket = "marineflow-tfstate"
     prefix = "terraform/state"

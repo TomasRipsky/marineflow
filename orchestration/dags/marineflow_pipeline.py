@@ -85,9 +85,9 @@ default_args = {
 
 def check_silver_data_arrived(**context) -> bool:
     """
-    Verify that Silver has written new data since the last DAG run.
-    Checks for Parquet files in silver/vessel_positions/ written in the
-    last 2 hours — if none found, short-circuits the DAG run.
+    Verify that Silver has written new data recently: look for Parquet files in
+    silver/vessel_positions/ updated in the last 2 hours. If there are none, the
+    DAG run is short-circuited.
 
     This prevents dbt from running when Silver has no new data to process
     (e.g. if the Spark job is temporarily stopped).

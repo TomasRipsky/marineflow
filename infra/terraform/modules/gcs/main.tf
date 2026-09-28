@@ -7,6 +7,9 @@
 # Bucket: Terraform State
 # NOTE: This bucket must exist BEFORE running terraform init with the backend.
 # Create it once manually with: gcloud storage buckets create gs://marineflow-tfstate
+# Because it is also declared here, Terraform must adopt it before the first apply
+# (terraform import module.gcs.google_storage_bucket.tfstate marineflow-tfstate);
+# otherwise the apply tries to create it and fails with "already exists".
 # -----------------------------------------------------------------------------
 resource "google_storage_bucket" "tfstate" {
   name                        = "marineflow-tfstate"

@@ -1,12 +1,33 @@
+"""Quick data-quality check of the Bronze positions Parquet.
+
+Prints the row count, the null count of the key columns and a sample of rows, using the column
+names Bronze really writes (raw aisstream.io names plus the lineage columns).
+
+Run it inside the Spark image with the GCS flags from the README, for example:
+
+    spark-submit --jars jars/gcs-connector-hadoop3-latest.jar \
+      --driver-class-path jars/gcs-connector-hadoop3-latest.jar diagnose_bronze.py
+
+It reads gs://$GCS_BUCKET/bronze/vessel_positions; set BRONZE_INPUT_DIR to point it elsewhere
+(a local path works too).
+"""
 import os
+import sys
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 GCS_BUCKET = os.getenv("GCS_BUCKET", "")
-BRONZE_INPUT_DIR = f"gs://{GCS_BUCKET}/bronze/vessel_positions"
+BRONZE_INPUT_DIR = os.getenv("BRONZE_INPUT_DIR") or (f"gs://{GCS_BUCKET}/bronze/vessel_positions" if GCS_BUCKET else "")
+KEY_COLUMNS = ["MMSI", "Latitude", "Longitude", "Sog", "ShipName", "time_utc"]
+
+if not BRONZE_INPUT_DIR:
+    print("Set GCS_BUCKET or BRONZE_INPUT_DIR")
+    sys.exit(2)
 
 spark = (
     SparkSession.builder
@@ -22,19 +43,15 @@ spark.sparkContext.setLogLevel("WARN")
 
 df = spark.read.parquet(BRONZE_INPUT_DIR)
 total = df.count()
-print(f"\nTotal Bronze records: {total}")
-print(f"\nNull counts per column:")
+print(f"\nBronze records in {BRONZE_INPUT_DIR}: {total}")
 
-for col in ["mmsi", "event_timestamp", "latitude", "longitude", 
-            "speed_over_ground", "vessel_name", "destination"]:
-    null_count = df.filter(F.col(col).isNull()).count()
-    pct = round(null_count / total * 100, 1)
-    print(f"  {col}: {null_count} nulls ({pct}%)")
+if total:
+    print("\nNull counts per column:")
+    for col in KEY_COLUMNS:
+        null_count = df.filter(F.col(col).isNull()).count()
+        print(f"  {col}: {null_count} nulls ({round(null_count / total * 100, 1)}%)")
 
-print(f"\nSample of records where event_timestamp is null:")
-df.filter(F.col("event_timestamp").isNull()).show(5, truncate=False)
-
-print(f"\nSample event_timestamp values (raw string):")
-df.select("event_timestamp", "ingestion_timestamp", "source").show(10, truncate=False)
+    print("\nSample of records:")
+    df.select("MMSI", "time_utc", "ingestion_timestamp", "_source_system", "_batch_id").show(10, truncate=False)
 
 spark.stop()

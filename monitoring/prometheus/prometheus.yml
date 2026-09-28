@@ -2,10 +2,12 @@
 # MARINEFLOW — Prometheus Configuration
 # monitoring/prometheus/prometheus.yml
 #
-# Scrapes each Spark driver's built-in Prometheus servlet
-# (spark.ui.prometheus.enabled=true), exposed at :4040/metrics/prometheus
+# Scrapes the PrometheusServlet sink of each GCS-writing Spark driver (configured
+# in processing/spark-conf/metrics.properties), exposed at :4040/metrics/prometheus
 # inside the marineflow-net Docker network. No host port mapping needed —
 # Prometheus reaches each container directly by its Compose service name.
+# The streaming rate/latency series only exist for jobs started with
+# --conf spark.sql.streaming.metricsEnabled=true. spark-hot-alerts has no target here.
 # =============================================================================
 
 global:

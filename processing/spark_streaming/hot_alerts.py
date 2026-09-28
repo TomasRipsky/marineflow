@@ -21,8 +21,8 @@
 #     global max-speed limit (35 kn) — no vessel-type join in the hot path,
 #     unlike dbt which has per-type limits. Simplification, not a bug.
 #   - AIS GAP: ProcessingTimeTimeout of 120 min per vessel (same threshold
-#     as vessel_dark_events.sql's MEDIUM tier). Fires the instant a vessel
-#     goes silent — dbt only detects gaps retroactively when the vessel
+#     as vessel_dark_events.sql's MEDIUM tier). Fires when that timeout
+#     expires, without waiting for the vessel to reappear — dbt only detects gaps retroactively when the vessel
 #     reappears, so this is a genuine capability the batch layer doesn't
 #     have, not just a faster version of the same thing. No displacement/
 #     severity grading here (that needs the reappearance point) — dbt still
@@ -32,7 +32,8 @@
 #   spark-submit \
 #     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
 #     hot_alerts.py
-#   (no GCS jars needed — this job never touches GCS or BigQuery)
+#   (no GCS jars needed — this job never touches GCS or BigQuery; it does need
+#   pandas and pyarrow, which the Spark image installs from requirements.txt)
 # =============================================================================
 
 import math

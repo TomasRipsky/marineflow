@@ -18,11 +18,11 @@ models:
 
     staging:
       +materialized: view          # staging = always views, never stored
-      +dataset: marineflow_silver  # reads from Silver dataset
+      +dataset: marineflow_silver  # the staging view lives next to the Silver tables
       +tags: ["staging"]
 
     gold:
-      +materialized: table         # gold = persisted tables for analytics + ML
+      +materialized: table         # gold = persisted tables for analytics
       +dataset: marineflow_gold
       +tags: ["gold"]
       +partition_by:

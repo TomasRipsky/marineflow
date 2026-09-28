@@ -47,8 +47,9 @@ with_segment as (
         -- Time gap in minutes between consecutive positions
         timestamp_diff(event_timestamp, prev_timestamp, minute) as minutes_since_prev,
 
-        -- Estimated distance using equirectangular approximation (km)
-        -- Accurate enough for short segments between AIS pings
+        -- Estimated distance in km: a flat approximation with 111 km per degree on both axes.
+        -- It ignores the cos(latitude) factor, so east-west distance is overestimated away from
+        -- the equator. Fine as a rough activity measure, not for navigation.
         case
             when prev_timestamp is not null
             then sqrt(

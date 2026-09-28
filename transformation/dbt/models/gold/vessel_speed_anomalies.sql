@@ -84,10 +84,10 @@ select
     s.longitude,
     case
         when s.calculated_speed_knots > coalesce(t.max_speed_knots, 35)
-         and abs(s.speed_change_rate) > 5   then 'GPS_SPOOFING'        -- imposible + aceleración brusca
+         and abs(s.speed_change_rate) > 5   then 'GPS_SPOOFING'        -- impossible speed plus an abrupt speed change
         when s.calculated_speed_knots > coalesce(t.max_speed_knots, 35)
-                                            then 'IMPOSSIBLE_SPEED'    -- imposible pero gradual
-        else                                     'SUDDEN_ACCELERATION' -- speed_change_rate > 10, velocidad dentro de límites
+                                            then 'IMPOSSIBLE_SPEED'    -- impossible speed without an abrupt speed change
+        else                                     'SUDDEN_ACCELERATION' -- speed_change_rate > 10 with a plausible calculated speed
     end as anomaly_type
 from with_calculated_speed s
 left join type_limits t using (vessel_type_normalized)

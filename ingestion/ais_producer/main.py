@@ -28,7 +28,7 @@ from parser import parse_message
 from producer import KafkaPublisher
 
 # =============================================================================
-# Logging setup — structured JSON logs for GCP Cloud Logging compatibility
+# Logging setup — structured JSON logs by default (LOG_FORMAT=console for readable output)
 # =============================================================================
 structlog.configure(
     processors=[

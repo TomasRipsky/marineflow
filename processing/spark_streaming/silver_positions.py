@@ -17,14 +17,16 @@
 #   time_utc          → event_timestamp
 #
 # Enrichments derived here for the first time:
-#   flag_country         — from MMSI MID prefix
-#   ocean_region         — bounding box from lat/lon
-#   nearest_port         — proximity to major ports
-#   eez_country          — EEZ from port proximity
-#   is_in_port_zone      — within port radius
-#   distance_to_port_km  — Haversine distance to nearest port
-#   speed_change_rate    — delta vs previous message per vessel
-#   heading_change_degrees — delta vs previous message per vessel
+#   flag_country         — from the MMSI's MID prefix (reference_data.py)
+#   ocean_region         — coarse bounding boxes on lat/lon, first match wins
+#   nearest_port         — the major port whose box contains the position (null elsewhere)
+#   eez_country          — country of that port; NOT a real EEZ (null outside port boxes)
+#   is_in_port_zone      — inside one of the 15 port boxes
+#   distance_to_port_km  — approximate distance to that port: 111 km per degree, no
+#                          latitude correction (null outside port boxes)
+#   speed_change_rate    — |speed delta| vs the previous message of the vessel, computed
+#                          within the micro-batch (null for the first row of a vessel)
+#   heading_change_degrees — same, for heading
 #
 # Fields intentionally excluded (belong to vessel_metadata):
 #   vessel_type_normalized — from ShipStaticData, joined in Gold via dbt
@@ -32,9 +34,11 @@
 #
 # Run:
 #   spark-submit \
-#     --jars jars/gcs-connector-hadoop3-latest.jar,jars/spark-bigquery-0.40.0.jar \
-#     --driver-class-path jars/gcs-connector-hadoop3-latest.jar:jars/spark-bigquery-0.40.0.jar \
+#     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
+#     --jars jars/gcs-connector-hadoop3-latest.jar \
+#     --driver-class-path jars/gcs-connector-hadoop3-latest.jar \
 #     silver_positions.py
+# (the full command with all the GCS flags is in the README)
 # =============================================================================
 
 import os
@@ -231,7 +235,7 @@ def rename_bronze_fields(df):
 
 
 def deduplicate(df):
-    """Remove duplicate (mmsi, event_timestamp) — keep most recently ingested."""
+    """Remove duplicate (mmsi, event_timestamp) within the micro-batch — keep the most recently ingested."""
     from pyspark.sql import functions as F, Window
 
     window = Window.partitionBy("mmsi", "event_timestamp").orderBy(
@@ -245,7 +249,7 @@ def deduplicate(df):
 
 
 def enrich_geospatial(df):
-    """Add ocean region, port proximity and Haversine distance."""
+    """Add ocean region, port zone membership and an approximate distance to the port."""
     from pyspark.sql import functions as F
     from pyspark.sql.types import StringType
 
@@ -298,7 +302,7 @@ def enrich_geospatial(df):
 
 
 def calculate_movement_deltas(df):
-    """Speed and heading change vs previous message per vessel."""
+    """Speed and heading change vs the previous message of the vessel, within the micro-batch."""
     from pyspark.sql import functions as F, Window
     from pyspark.sql.types import DoubleType
 
@@ -368,9 +372,8 @@ def transform_to_silver(df):
 
 def process_micro_batch(df, epoch_id: int):
     """
-    Called by Structured Streaming for each micro-batch.
-    Spark guarantees each Bronze file is processed exactly once via checkpointing.
-    No manual hour filtering needed — the checkpoint handles it.
+    Called by Structured Streaming for each micro-batch of Bronze records read from Kafka.
+    The checkpoint tracks the committed offsets, so no manual filtering is needed.
     """
     from pyspark.sql import functions as F
 
