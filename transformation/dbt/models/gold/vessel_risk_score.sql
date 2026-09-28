@@ -2,6 +2,7 @@
     materialized='incremental',
     unique_key='score_id',
     incremental_strategy='merge',
+    on_schema_change='sync_all_columns',
     partition_by={'field': 'score_date', 'data_type': 'date'},
     cluster_by=['flag_country']
 ) }}
@@ -34,7 +35,6 @@ loiter as (
     select
         mmsi,
         count(*)                                                              as loiter_events,
-        countif(potential_sts_transfer = true)                               as sts_signals,
         sum(duration_minutes)                                                 as total_loiter_minutes
     from {{ ref('vessel_loitering') }}
     where event_date >= date_sub(current_date(), interval 30 day)
@@ -68,13 +68,11 @@ select
     coalesce(s.speed_anomalies, 0)                               as speed_anomalies_30d,
     coalesce(s.spoofing_signals, 0)                              as spoofing_signals_30d,
     coalesce(l.loiter_events,  0)                                as loiter_events_30d,
-    coalesce(l.sts_signals,    0)                                as sts_signals_30d,
     -- Ponderación: spoofing y dark events con EEZ pesan más (intencionalidad clara)
     coalesce(d.dark_score, 0)          * 10
     + coalesce(d.eez_crossing_gaps, 0) * 8
     + coalesce(s.spoofing_signals, 0)  * 15
     + coalesce(s.speed_anomalies, 0)   * 5
-    + coalesce(l.sts_signals, 0)       * 12
     + coalesce(l.loiter_events, 0)     * 3                       as risk_score,
     current_date()                                               as score_date
 from vessels v

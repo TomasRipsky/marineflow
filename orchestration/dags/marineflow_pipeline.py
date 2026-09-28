@@ -195,7 +195,7 @@ automatic compaction.
     dbt_loitering = BashOperator(
         task_id="dbt_loitering",
         bash_command=DBT_CMD.format("run --select vessel_loitering"),
-        doc_md="Detect loitering sessions and potential STS transfers.",
+        doc_md="Detect loitering sessions: slow movement outside port zones for over 3 hours.",
     )
 
     # ── 3b. dbt — erratic course (reads vessel_activity_summary) ───────────

@@ -42,6 +42,31 @@ class DagTest(unittest.TestCase):
         self.assertIn("[dbt_erratic, dbt_risk] >> dbt_test", self.dag)
 
 
+class DbtModelsTest(unittest.TestCase):
+    def test_the_removed_sts_flag_stays_removed(self):
+        """potential_sts_transfer could never be true (distance_to_port_km is null outside the 15 port
+        boxes). Do not re-add it without a real port catalogue."""
+        for path in (DBT_DIR / "models").rglob("*"):
+            if path.suffix in {".sql", ".yml"}:
+                text = path.read_text()
+                for name in ("potential_sts_transfer", "sts_signals", "avg_distance_to_port_km"):
+                    with self.subTest(file=path.name, name=name):
+                        self.assertNotIn(name, text)
+
+    def test_models_that_lost_columns_sync_their_schema(self):
+        """dbt's incremental merge inserts the target table's columns; a column removed from the model
+        would break every run until a full refresh, unless the schema is synced."""
+        for model in ("vessel_loitering", "vessel_risk_score"):
+            with self.subTest(model=model):
+                sql = (DBT_DIR / f"models/gold/{model}.sql").read_text()
+                self.assertIn("on_schema_change='sync_all_columns'", sql)
+
+    def test_risk_score_still_weights_the_remaining_signals(self):
+        sql = (DBT_DIR / "models/gold/vessel_risk_score.sql").read_text()
+        for term in ("dark_score", "eez_crossing_gaps", "spoofing_signals", "speed_anomalies", "loiter_events"):
+            self.assertIn(term, sql)
+
+
 class ComposeWiringTest(unittest.TestCase):
     def container_env(self):
         env = {}
