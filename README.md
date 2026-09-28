@@ -158,7 +158,7 @@ Every message is **keyed by MMSI** — guarantees everything about a given vesse
 | `SUDDEN_ACCELERATION` | medium | Reported SOG changed by > 10 kn between consecutive messages |
 | `AIS_GAP` | medium | No message from the vessel for 120 minutes (fires when the per-vessel timeout expires, not on reappearance) |
 
-The hot path uses one global speed limit (35 kn); the vessel-type-specific limits live in dbt.
+The hot path uses one global speed limit (35 kn); the vessel-type-specific limits live in dbt. A reported SOG of 102.3 kn (the AIS "not available" value) is ignored here, and Silver turns it into null (as it does with COG 360° and heading 511), so it never counts as a speed change.
 
 ---
 
