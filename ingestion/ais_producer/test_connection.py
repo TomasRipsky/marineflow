@@ -1,40 +1,43 @@
+"""Manual check that aisstream.io accepts your API key.
+
+Connects the same way the producer does (same URL, default TLS certificate verification),
+subscribes to a small box over the Port of Rotterdam and prints the first message received.
+
+    cd ingestion/ais_producer && python test_connection.py
+
+It needs AIS_API_KEY in the environment or in .env. The key itself is never printed.
+"""
 import asyncio
 import json
-import os
-import ssl
-from dotenv import load_dotenv
+import sys
+
 import websockets
 
-load_dotenv()
+from config import Config
 
-API_KEY = os.getenv("AIS_API_KEY", "")
 
-async def test():
-    print(f"API key prefix: {API_KEY[:8]}")
-
-    # Create SSL context that handles schannel renegotiation
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    ssl_context.options |= ssl.OP_NO_SSLv2
-    ssl_context.options |= ssl.OP_NO_SSLv3
+async def check() -> int:
+    if not Config.AIS_API_KEY:
+        print("AIS_API_KEY is not set")
+        return 2
+    print("AIS_API_KEY is set")
 
     try:
-        async with websockets.connect(
-            "wss://stream.aisstream.io/v0/stream",
-            ssl=ssl_context,
-            open_timeout=20,
-        ) as ws:
+        async with websockets.connect(Config.AIS_WS_URL, open_timeout=20) as ws:
             print("Connected successfully")
             await ws.send(json.dumps({
-                "APIKey": API_KEY,
+                "APIKey": Config.AIS_API_KEY,
                 "BoundingBoxes": [[[51.0, 3.0], [52.0, 5.0]]],
-                "FilterMessageTypes": ["PositionReport"]
+                "FilterMessageTypes": ["PositionReport"],
             }))
-            print("Subscription sent, waiting for messages...")
-            msg = await asyncio.wait_for(ws.recv(), timeout=20)
-            print(f"Message: {msg[:300]}")
-    except Exception as e:
-        print(f"Error: {type(e).__name__}: {e}")
+            print("Subscription sent, waiting for a message...")
+            message = await asyncio.wait_for(ws.recv(), timeout=20)
+            print(f"First message: {message[:300]}")
+    except Exception as error:
+        print(f"Error: {type(error).__name__}: {error}")
+        return 1
+    return 0
 
-asyncio.run(test())
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(check()))

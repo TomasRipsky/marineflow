@@ -2,11 +2,9 @@
 # MARINEFLOW — Spark Silver Metadata Job
 # processing/spark_streaming/silver_metadata.py
 #
-# Reads ShipStaticData messages directly from the Kafka topic
-# "vessel-metadata" using Spark Structured Streaming's native Kafka source,
-# and transforms them into the Silver vessel_metadata table.
-#
-# The producer publishes the raw aisstream.io JSON as-is.
+# Reads the flattened ShipStaticData records that bronze_metadata.py publishes
+# to the Kafka topic "vessel-metadata-bronze" (Structured Streaming's native
+# Kafka source) and transforms them into the Silver vessel_metadata table.
 #
 # Fields populated here:
 #   vessel_type_normalized  — AIS integer → semantic category
@@ -56,7 +54,8 @@ KAFKA_TOPIC_METADATA_BRONZE = os.getenv("KAFKA_TOPIC_METADATA_BRONZE", "vessel-m
 KAFKA_STARTING_OFFSETS  = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
 
 METADATA_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_metadata"
-# New checkpoint path — incompatible with the old file-source checkpoint.
+# Kafka-source checkpoint: keep the path stable, a checkpoint written by a different
+# source type (such as the old file-source one) crashes the job.
 CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_metadata_kafka"
 
 MAX_OFFSETS_PER_TRIGGER = int(os.getenv("METADATA_MAX_OFFSETS_PER_TRIGGER", "1000"))
@@ -94,7 +93,7 @@ DESTINATION_JUNK = {
 
 
 # =============================================================================
-# Envelope schema
+# Input schema
 # =============================================================================
 
 def get_landing_schema():

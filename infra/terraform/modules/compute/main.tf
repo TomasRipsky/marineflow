@@ -4,6 +4,10 @@
 #
 # Deploys an e2-micro VM to run the AIS Producer as a persistent process.
 #
+# NOT WIRED IN: main.tf does not instantiate this module. Today the producer runs
+# locally against a local Kafka; a VM would also need a Kafka broker it can reach
+# (set kafka_bootstrap_servers), which this repo does not provide.
+#
 # Why a VM instead of Cloud Run / Cloud Functions:
 #   The AIS producer maintains a long-lived WebSocket connection to aisstream.io.
 #   Cloud Run Jobs and Cloud Functions have TCP idle timeouts (~10 min) that

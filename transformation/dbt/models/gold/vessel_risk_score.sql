@@ -47,7 +47,7 @@ vessels as (
         vessel_name,
         vessel_type_normalized,
         flag_country,
-        -- Último puerto conocido
+        -- Last port zone the vessel was seen in (null if it never entered one of the 15 port boxes)
         last_value(nearest_port ignore nulls) over (
             partition by mmsi order by event_timestamp
             rows between unbounded preceding and unbounded following
@@ -68,7 +68,7 @@ select
     coalesce(s.speed_anomalies, 0)                               as speed_anomalies_30d,
     coalesce(s.spoofing_signals, 0)                              as spoofing_signals_30d,
     coalesce(l.loiter_events,  0)                                as loiter_events_30d,
-    -- Ponderación: spoofing y dark events con EEZ pesan más (intencionalidad clara)
+    -- Weights: spoofing, and dark events that end in a different port zone, weigh more (clearer intent)
     coalesce(d.dark_score, 0)          * 10
     + coalesce(d.eez_crossing_gaps, 0) * 8
     + coalesce(s.spoofing_signals, 0)  * 15

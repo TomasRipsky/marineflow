@@ -265,7 +265,6 @@ resource "google_bigquery_table" "vessel_metadata" {
       { name = "draught",                type = "FLOAT64",   mode = "NULLABLE" },
       { name = "flag_country",           type = "STRING",    mode = "NULLABLE" },
       { name = "source_system",          type = "STRING",    mode = "NULLABLE" },
-      { name = "ingestion_timestamp",    type = "TIMESTAMP", mode = "NULLABLE" },
       { name = "processing_timestamp",   type = "TIMESTAMP", mode = "NULLABLE" },
       { name = "_silver_batch_id",       type = "STRING",    mode = "NULLABLE" }
     ])

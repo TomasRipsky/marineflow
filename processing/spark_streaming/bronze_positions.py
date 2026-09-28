@@ -15,11 +15,12 @@
 #   3. Filter physically impossible coordinates
 #   4. Add partition columns and lineage fields
 #   5. Write to GCS Bronze Parquet
+#   6. Publish the same rows to Kafka (vessel-positions-bronze) for Silver and Hot Alerts
 #
 # Bronze philosophy:
-#   - Zero business transformations — field names match aisstream.io exactly
+#   - No business transformations — field names match aisstream.io exactly
 #   - Minimal validation — only reject physically impossible records
-#   - Full lineage — every record knows its Kafka offset, batch and version
+#   - Lineage — every record carries its batch id, pipeline version and ingestion time
 #
 # Run:
 #   spark-submit \
@@ -72,9 +73,9 @@ KAFKA_TOPIC_POSITIONS_BRONZE = os.getenv("KAFKA_TOPIC_POSITIONS_BRONZE", "vessel
 KAFKA_STARTING_OFFSETS = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
 
 BRONZE_OUTPUT_DIR = f"gs://{GCS_BUCKET}/bronze/vessel_positions"
-# New checkpoint path — the old file-source checkpoint (checkpoints/bronze_positions)
-# is NOT compatible with a Kafka source (different offset tracking format) and
-# would crash the job if reused. Keep this path, don't point back at the old one.
+# Kafka-source checkpoint. Keep this path stable: a checkpoint written by a different
+# source type (for example the old file-source one under checkpoints/bronze_positions)
+# uses another offset format and crashes the job if reused.
 CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/bronze_positions_kafka"
 
 MAX_OFFSETS_PER_TRIGGER = int(os.getenv("BRONZE_MAX_OFFSETS_PER_TRIGGER", "1000"))
@@ -168,7 +169,7 @@ def extract_fields(df):
         F.col("MetaData.MMSI_String").cast("string").alias("MMSI_String"),
         F.col("MetaData.ShipName").alias("ShipName"),
         F.col("MetaData.time_utc").alias("time_utc"),
-        # Source system from MessageType presence
+        # Constant: aisstream.io is the only source
         F.lit("aisstream_live").alias("_source_system"),
     )
 
@@ -227,7 +228,8 @@ def add_partition_and_lineage(df, batch_id: str):
 def process_micro_batch(df, epoch_id: int):
     """
     Called by Structured Streaming for each micro-batch.
-    Decodes, validates, enriches and writes to GCS Bronze.
+    Validates, adds partition/lineage columns, then writes to GCS Bronze and to the
+    Kafka bronze topic.
     """
     from pyspark.sql import functions as F
 
@@ -347,8 +349,7 @@ def main() -> None:
 
     # Native Kafka source — push-based, no file polling. Kafka gives us
     # key/value as binary plus topic/partition/offset/timestamp metadata;
-    # we only need value (the raw AIS JSON), parsed against the same schema
-    # the old file-source version used.
+    # we only need value (the raw AIS JSON), parsed with get_landing_schema().
     kafka_raw = (
         spark.readStream
         .format("kafka")

@@ -26,14 +26,15 @@ resource "google_project_iam_member" "bq_job_user" {
   member  = "serviceAccount:${var.service_account_email}"
 }
 
-# Binding: SA can write to Cloud Logging
+# Binding: SA can write to Cloud Logging (not used by the current pipeline)
 resource "google_project_iam_member" "log_writer" {
   project = var.project_id
   role    = "roles/logging.logWriter"
   member  = "serviceAccount:${var.service_account_email}"
 }
 
-# Binding: SA can write custom metrics to Cloud Monitoring
+# Binding: SA can write custom metrics to Cloud Monitoring (not used by the current
+# pipeline: metrics go to the local Prometheus)
 resource "google_project_iam_member" "metric_writer" {
   project = var.project_id
   role    = "roles/monitoring.metricWriter"

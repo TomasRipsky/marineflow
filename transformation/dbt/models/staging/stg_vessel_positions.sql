@@ -87,7 +87,7 @@ staged as (
         and p.latitude  between -90  and 90
         and p.longitude between -180 and 180
         and p.event_timestamp is not null
-        and p.mmsi not like '0%'   -- filter AIS test transmissions
+        and p.mmsi not like '0%'   -- MMSIs starting with 0 are coast stations and group calls, not vessels
 )
 
 select * from staged

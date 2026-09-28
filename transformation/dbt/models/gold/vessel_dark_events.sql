@@ -66,7 +66,9 @@ select
         when gap_minutes > 360 and displacement_km > 50  then 'HIGH'
         when gap_minutes > 120                           then 'MEDIUM'
     end as severity,
-    -- Contexto extra: desapareció en EEZ de otro país = más sospechoso
+    -- Extra context: reappearing in a different port zone than the one it vanished in is more
+    -- suspicious. It is only a proxy for crossing jurisdictions: it needs both the last and the
+    -- first position of the gap to be inside one of the 15 port boxes.
     case
         when eez_country is not null
          and last_known_port is not null

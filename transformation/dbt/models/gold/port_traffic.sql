@@ -5,7 +5,7 @@
 -- Answers questions like:
 --   - How many vessels passed through Rotterdam today?
 --   - What vessel types dominate Singapore?
---   - Which ports have the highest anomaly rates?
+--   - Which ports see the most sudden manoeuvres?
 --
 -- Grain: one row per (nearest_port, date_day)
 -- Partitioned by: date_day
