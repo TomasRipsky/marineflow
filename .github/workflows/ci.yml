@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Byte-compile the sources
+        run: python -m compileall -q processing ingestion orchestration tests
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  dbt:
+    name: dbt parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Same dbt version the Airflow image runs (orchestration/Dockerfile).
+      - name: Install dbt
+        run: pip install dbt-bigquery==1.8.2
+
+      - name: Install dbt packages
+        working-directory: transformation/dbt
+        run: dbt deps --profiles-dir .
+
+      # Parsing needs no BigQuery credentials or connection.
+      - name: Parse the project
+        working-directory: transformation/dbt
+        run: dbt parse --profiles-dir .

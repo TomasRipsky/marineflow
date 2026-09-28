@@ -225,6 +225,7 @@ marineflow/
 │       ├── silver_positions.py  # Kafka bronze → GCS Silver (dedup, enrichment)
 │       ├── silver_metadata.py   # Kafka bronze → GCS Silver (normalization)
 │       ├── hot_alerts.py        # Kafka bronze → Kafka alerts (stateful, no GCS)
+│       ├── reference_data.py    # Shared lookups (flag MIDs) used by both Silver jobs
 │       └── diagnose_bronze.py   # Diagnostics helper
 │
 ├── transformation/dbt/
@@ -250,8 +251,11 @@ marineflow/
 │   ├── prometheus/prometheus.yml
 │   └── grafana/                 # Datasource + dashboard, auto-provisioned
 │
+├── tests/                       # Unit tests (mappings, hot path, wiring) + smoke/ (real Spark)
+├── .github/workflows/ci.yml     # Compile + tests + dbt parse
 ├── docker-compose.yml
 ├── .env.example
+├── requirements-dev.txt
 └── .gitignore
 ```
 
@@ -304,7 +308,7 @@ docker compose up postgres airflow-init airflow-webserver airflow-scheduler -d -
 docker compose up kafka-exporter prometheus grafana -d --build
 ```
 
-The Spark containers only run `sleep infinity`; the jobs are started by hand in step 5.
+The Spark containers only run `sleep infinity`; the jobs are started by hand in step 5. All five share one image (`marineflow-spark:3.5.0`, Python 3.8) whose `requirements.txt` pins pandas, pyarrow and numpy — Hot Alerts needs them for `applyInPandasWithState`. After changing that file, rebuild with `--build` and recreate the Spark containers.
 
 ### 4. The producer
 
@@ -345,6 +349,19 @@ docker exec marineflow-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstra
 bq query --use_legacy_sql=false 'SELECT COUNT(*) FROM `<project>.marineflow_silver.vessel_positions_clean`'
 bq query --use_legacy_sql=false 'SELECT severity, COUNT(*) FROM `<project>.marineflow_gold.vessel_erratic_course` GROUP BY 1'
 ```
+
+### 8. Tests and CI
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q          # or, with no install: python -m unittest discover -s tests
+```
+
+The tests never import the Spark jobs (they call `load_dotenv()` and need PySpark); constants and pure functions are extracted from the source. They cover the reference mappings across layers (Silver ↔ dbt), the AIS "not available" values and the hot path logic, and the wiring between files (the DAG runs every gold model, Docker Compose passes the variables the jobs read).
+
+`tests/smoke/hot_alerts_smoke.py` runs the hot path on real Spark inside the project's Spark image (the Docker command is in its docstring). Fakes cannot catch everything: it is what showed that Spark hands the per-vessel state back as a tuple.
+
+GitHub Actions (`.github/workflows/ci.yml`) compiles the sources, runs the tests and runs `dbt parse` (dbt-bigquery 1.8.2, no credentials needed) on every push to `main` and on pull requests.
 
 ### Local ports
 
