@@ -4,6 +4,7 @@ The previous in-DAG compaction read a partition and overwrote it, which deleted 
 was then hidden by a catch-all `except`. What matters here is that no interruption can lose data.
 """
 import json
+import os
 import unittest
 
 import helpers  # noqa: F401  (puts processing/spark_streaming on sys.path)
@@ -118,6 +119,14 @@ class HelpersTest(unittest.TestCase):
     def test_only_closed_days_are_compacted(self):
         with self.assertRaises(ValueError):
             cs.compact(None, FakeStorage(), BASE, DATASET, cs.utc_today())
+
+    def test_main_refuses_to_run_without_a_silver_location(self):
+        saved = os.environ.pop("GCS_BUCKET", None)
+        try:
+            self.assertEqual(cs.main(["--date", "2020-01-01"]), 2)     # returns before starting Spark
+        finally:
+            if saved is not None:
+                os.environ["GCS_BUCKET"] = saved
 
     def test_defaults(self):
         self.assertLess(cs.utc_yesterday(), cs.utc_today())

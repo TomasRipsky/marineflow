@@ -29,6 +29,14 @@ class DagTest(unittest.TestCase):
                 with self.subTest(model=model):
                     self.assertIn(model, models)
 
+    def test_dag_holds_no_spark_and_never_overwrites_silver(self):
+        """The Airflow image has no Spark, and the compaction that used to live here read a partition
+        and overwrote it (deleting the data). Compaction is compact_silver.py, run by hand."""
+        self.assertNotIn("pyspark", self.dag)
+        self.assertNotIn('mode("overwrite")', self.dag)
+        self.assertNotIn("compact_silver_partition", self.dag)
+        self.assertNotIn("PythonOperator", self.dag.replace("ShortCircuitOperator", ""))
+
     def test_erratic_course_waits_for_the_activity_summary(self):
         self.assertIn("dbt_batch >> dbt_erratic", self.dag)
         self.assertIn("[dbt_erratic, dbt_risk] >> dbt_test", self.dag)

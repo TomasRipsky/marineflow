@@ -129,7 +129,7 @@ Metrics (throughput, latency, lag) cover system health. To look at the *content*
 | **Raw storage** | Google Cloud Storage (Parquet) | Immutable historical archive; `mode="append"` never rewrites anything, only adds |
 | **Warehouse** | BigQuery — External Tables + native tables | Bronze/Silver read GCS directly (zero load latency); Gold is native because dbt materializes it |
 | **Batch transformation** | dbt | Declarative tests, documentation, and lineage — replacing it with loose SQL in Airflow would lose all of that for no gain, see [Design Decisions](#design-decisions) |
-| **Orchestration** | Airflow (LocalExecutor) | Orchestrates dbt (plus a daily Silver compaction) — it does not orchestrate the Spark jobs, which run continuously on their own |
+| **Orchestration** | Airflow (LocalExecutor) | Orchestrates dbt only — it does not orchestrate the Spark jobs, which run continuously on their own |
 | **Observability** | Prometheus + Grafana + kafka-exporter | Pipeline metrics and consumer group lag |
 | **Infrastructure** | Terraform | GCS, BigQuery, IAM — reproducible, no manual clicks in the console |
 | **Containers** | Docker Compose, custom images | Dependencies baked in at build time, not reinstalled on every startup |
@@ -186,7 +186,8 @@ The `marineflow_pipeline` DAG runs hourly at minute 5:
 3. `dbt_erratic_course` — after `dbt_batch_models`, because it reads `vessel_activity_summary`.
 4. `dbt_risk_score` — after the three detection models.
 5. `dbt_test` — after `dbt_erratic_course` and `dbt_risk_score`.
-6. `compact_gcs` — only in the 02:05 UTC run: merges the previous day's small Silver Parquet files into one per partition.
+
+Compacting the small Silver files is **not** part of this DAG: see [Silver compaction](#9-silver-compaction-manual).
 
 dbt runs inside the scheduler container (`dbt-bigquery` baked into `orchestration/Dockerfile`) with `--target prod`.
 
@@ -225,6 +226,7 @@ marineflow/
 │       ├── silver_positions.py  # Kafka bronze → GCS Silver (dedup, enrichment)
 │       ├── silver_metadata.py   # Kafka bronze → GCS Silver (normalization)
 │       ├── hot_alerts.py        # Kafka bronze → Kafka alerts (stateful, no GCS)
+│       ├── compact_silver.py    # Safe compaction of a closed day's small Silver files (manual)
 │       ├── reference_data.py    # Shared lookups (flag MIDs) used by both Silver jobs
 │       └── diagnose_bronze.py   # Diagnostics helper
 │
@@ -363,6 +365,20 @@ The tests never import the Spark jobs (they call `load_dotenv()` and need PySpar
 
 GitHub Actions (`.github/workflows/ci.yml`) compiles the sources, runs the tests and runs `dbt parse` (dbt-bigquery 1.8.2, no credentials needed) on every push to any branch (and can be started by hand from the Actions tab); the checks also show up on pull requests.
 
+### 9. Silver compaction (manual)
+
+The Silver jobs write one small Parquet file per 30-second micro-batch, which slows down the BigQuery external tables. `compact_silver.py` merges the files of a **closed** day (yesterday by default; today is refused) into a few large ones, for both Silver datasets. Run it in the Spark image; the container needs your ADC credentials and the bucket, and no stack has to be running:
+
+```bash
+docker run --rm --entrypoint /bin/sh \
+  -e GCS_BUCKET=<your-bucket> -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json \
+  -v "${ADC_PATH:-$HOME/.config/gcloud/application_default_credentials.json}:/tmp/adc.json:ro" \
+  -v "$PWD/processing:/opt/spark/processing:ro" \
+  marineflow-spark:3.5.0 -c "/opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/compact_silver.py --dry-run"
+```
+
+Drop `--dry-run` to apply it; add `--date YYYY-MM-DD` for another day or `--dataset vessel_positions` for one dataset. It is safe by construction: it snapshots the files, writes and verifies the compacted output outside the table prefix, and only then swaps it in. Files that arrive late are never touched, a run that is interrupted is finished by the next one, and any failure exits non-zero. The previous in-DAG compaction overwrote the path it was reading and deleted the partition.
+
 ### Local ports
 
 | Service | Port | URL |
@@ -405,7 +421,7 @@ Each job runs `local[2]` inside its own container, and the jobs are started manu
 
 ### Small file accumulation in GCS
 
-`coalesce(1)` limits file count per micro-batch, but files still accumulate over time. The Airflow DAG compacts the previous day's Silver positions once a day; Bronze and Silver metadata are not compacted. Delta Lake would handle this automatically in a production scenario.
+`coalesce(1)` limits file count per micro-batch, but files still accumulate over time. Silver can be compacted with `compact_silver.py` (step 9), but nothing runs it automatically, and Bronze is never compacted. A scheduled Dataproc job, or Delta Lake, would handle this in a production scenario.
 
 ### Silver deduplication and movement deltas are per micro-batch
 
