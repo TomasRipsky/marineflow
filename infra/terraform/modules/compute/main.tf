@@ -134,9 +134,10 @@ resource "google_compute_instance" "ais_producer" {
       cat > /home/marineflow/producer.env <<EOF
       GCP_PROJECT_ID=${var.project_id}
       GOOGLE_CLOUD_PROJECT=${var.project_id}
-      PUBSUB_TOPIC_POSITIONS=${var.pubsub_topic_positions}
-      PUBSUB_TOPIC_METADATA=${var.pubsub_topic_metadata}
-      PUBSUB_TOPIC_DLQ=${var.pubsub_topic_dlq}
+      KAFKA_BOOTSTRAP_SERVERS=${var.kafka_bootstrap_servers}
+      KAFKA_TOPIC_POSITIONS=${var.kafka_topic_positions}
+      KAFKA_TOPIC_METADATA=${var.kafka_topic_metadata}
+      KAFKA_TOPIC_DLQ=${var.kafka_topic_dlq}
       MESSAGE_SOURCE=aisstream_live
       LOG_FORMAT=json
       AIS_API_KEY=$AIS_API_KEY

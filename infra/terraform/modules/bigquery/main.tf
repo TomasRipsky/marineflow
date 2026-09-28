@@ -9,7 +9,7 @@
 resource "google_bigquery_dataset" "bronze" {
   dataset_id                  = "marineflow_bronze"
   friendly_name               = "MarineFlow — Bronze Layer"
-  description                 = "Raw data ingested from Pub/Sub with no transformations applied"
+  description                 = "Raw data archived by the Bronze Spark jobs, with no transformations applied"
   location                    = var.bq_location
   project                     = var.project_id
   default_table_expiration_ms = null  # bronze data does not expire automatically
@@ -104,7 +104,7 @@ resource "google_bigquery_table" "vessel_positions_raw" {
       { name = "time_utc",                  type = "TIMESTAMP", mode = "NULLABLE", description = "Event timestamp normalized to ISO 8601" },
       # --- Pipeline metadata ---
       { name = "ingestion_timestamp",       type = "TIMESTAMP", mode = "NULLABLE", description = "When Bronze processed this record" },
-      { name = "_source_system",            type = "STRING",    mode = "NULLABLE", description = "aisstream_live or simulator" },
+      { name = "_source_system",            type = "STRING",    mode = "NULLABLE", description = "aisstream_live" },
       { name = "_batch_id",                 type = "STRING",    mode = "NULLABLE", description = "Spark micro-batch ID" },
       { name = "_pipeline_version",         type = "STRING",    mode = "NULLABLE" },
       { name = "_ingestion_date",           type = "DATE",      mode = "NULLABLE" },

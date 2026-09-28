@@ -81,7 +81,7 @@ MAX_OFFSETS_PER_TRIGGER = int(os.getenv("BRONZE_MAX_OFFSETS_PER_TRIGGER", "1000"
 
 
 # =============================================================================
-# Pub/Sub envelope schema
+# Landing schema (raw Kafka message)
 # =============================================================================
 
 def get_landing_schema():

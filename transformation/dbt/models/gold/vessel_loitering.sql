@@ -28,8 +28,10 @@ with candidate_positions as (
         round(longitude, 1)                     as lon_cell
     from {{ ref('stg_vessel_positions') }}
     where speed_over_ground between 0.1 and 4.0
-      -- Excluir fondeo/amarre legítimo reportado por el propio buque
-      and navigational_status not in ('at anchor', 'moored')
+      -- Excluir fondeo/amarre legítimo reportado por el propio buque. Valores exactos
+      -- que escribe Silver (at_anchor, moored). Un estado nulo se conserva: el buque
+      -- no declaró estar fondeado, y `NOT IN` sobre NULL descartaría la fila.
+      and (navigational_status is null or navigational_status not in ('at_anchor', 'moored'))
       -- Solo interesa fuera de zona portuaria
       and (is_in_port_zone = false or is_in_port_zone is null)
     {% if is_incremental() %}

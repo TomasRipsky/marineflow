@@ -26,10 +26,17 @@
 #
 #   check_silver_data_arrived
 #             │
-#           dbt_run
-#             │
-#           dbt_test
-#             │
+#   ┌─────────┼──────────────┬──────────────┐
+#   │         │              │              │
+# dbt_batch  dbt_dark   dbt_speed   dbt_loitering      (parallel)
+#   │         └──────────────┼──────────────┘
+#   │                        │
+# dbt_erratic          dbt_risk_score
+#   │  (needs vessel_activity_summary from dbt_batch)
+#   └────────────┬───────────┘
+#                │
+#             dbt_test
+#                │
 #     [daily @ 02:05 UTC only]
 #           compact_gcs
 # =============================================================================
@@ -191,9 +198,12 @@ locally they run in dedicated Docker containers.
 
 ### Task flow
 1. **check_silver_data_arrived** — verify Silver has new data (last 2h)
-2. **dbt_run** — materialize `vessel_activity_summary`, `port_traffic`, etc
-3. **dbt_test** — run data quality tests (not_null, unique, accepted_values)
-4. **compact_gcs** — merge small Silver Parquet files *(daily at 02:05 UTC only)*
+2. **dbt_batch_models** — `vessel_activity_summary`, `port_traffic`
+3. **dbt_dark_events / dbt_speed_anomalies / dbt_loitering** — incremental detection models, in parallel
+4. **dbt_erratic_course** — `vessel_erratic_course` (reads `vessel_activity_summary`, so it waits for step 2)
+5. **dbt_risk_score** — aggregates the three detection models
+6. **dbt_test** — run data quality tests (not_null, unique, accepted_values)
+7. **compact_gcs** — merge small Silver Parquet files *(daily at 02:05 UTC only)*
 
 ### Production upgrade path
 Replace `BashOperator` dbt tasks with `KubernetesPodOperator` or
@@ -243,6 +253,13 @@ or Delta Lake automatic compaction.
         doc_md="Detect loitering sessions and potential STS transfers.",
     )
 
+    # ── 3b. dbt — erratic course (reads vessel_activity_summary) ───────────
+    dbt_erratic = BashOperator(
+        task_id="dbt_erratic_course",
+        bash_command=DBT_CMD.format("run --select vessel_erratic_course"),
+        doc_md="Flag vessels with repeated sharp turns (>10/day). Needs vessel_activity_summary.",
+    )
+
     # ── 4. dbt — risk score (depends on all three detection models) ────────
     dbt_risk = BashOperator(
         task_id="dbt_risk_score",
@@ -277,18 +294,16 @@ or Delta Lake automatic compaction.
     #
     #   check_silver
     #        │
-    #   dbt_batch   ──┐
-    #   dbt_dark    ──┤
-    #   dbt_speed   ──┤  (parallel)
-    #   dbt_loitering─┤
-    #                 │
-    #            dbt_risk_score
-    #                 │
-    #            dbt_test
-    #                 │
-    #            daily_gate ── compact_gcs
+    #   dbt_batch   ──┬── dbt_erratic ─────┐
+    #   dbt_dark    ──┤                    │
+    #   dbt_speed   ──┼── dbt_risk_score ──┤  (detection models run in parallel)
+    #   dbt_loitering─┘                    │
+    #                                 dbt_test
+    #                                      │
+    #                             daily_gate ── compact_gcs
     #
     check_silver >> [dbt_batch, dbt_dark, dbt_speed, dbt_loitering]
+    dbt_batch >> dbt_erratic
     [dbt_dark, dbt_speed, dbt_loitering] >> dbt_risk
-    [dbt_batch, dbt_risk] >> dbt_test
+    [dbt_erratic, dbt_risk] >> dbt_test
     dbt_test >> daily_gate >> compact_gcs

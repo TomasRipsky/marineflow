@@ -67,7 +67,7 @@ async def subscribe(ws) -> None:
 
 async def process_message(raw_message: str, publisher: KafkaPublisher) -> None:
     """
-    Parse a single raw WebSocket message and publish it to Pub/Sub.
+    Parse a single raw WebSocket message and publish it to Kafka.
     Invalid or unhandled messages are silently skipped.
     """
     try:

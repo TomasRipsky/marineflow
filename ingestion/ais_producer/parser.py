@@ -7,15 +7,15 @@
 # Responsibilities:
 #   - Validate required fields (coordinates, MMSI)
 #   - Normalize the aisstream.io timestamp to ISO 8601
-#   - Route messages to the correct Pub/Sub topic
+#   - Route messages to the correct Kafka topic
 #
 # NOT responsible for:
 #   - Field renaming or business transformations
 #   - Derived fields (flag_country, vessel type mapping, etc.)
 #   - Any enrichment — all of that happens in Silver
 #
-# Message published to Pub/Sub: the raw aisstream.io JSON as-is.
-# Bronze reads and decodes the Pub/Sub envelope written by the GCS subscription.
+# Message published to Kafka: the raw aisstream.io JSON as-is (no envelope).
+# Bronze reads it straight from the topic and parses it against a fixed schema.
 # =============================================================================
 
 import json
