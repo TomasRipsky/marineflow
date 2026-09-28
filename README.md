@@ -348,6 +348,8 @@ Deleting topics without deleting checkpoints (or the other way round) leaves off
 3. remove the Hot Alerts checkpoint volume (`docker volume rm marineflow_hot-alerts-checkpoint`; check the exact name with `docker volume ls`, it starts with your project folder name);
 4. start the jobs again, then the producer.
 
+The complete, ordered runbook (including the gold tables, the Hot Alerts state, the DAG and a check for every layer) is [FRESH_START.md](FRESH_START.md).
+
 ### Silver compaction
 
 Silver writes one small Parquet file per 30-second micro-batch, which slows BigQuery down over time. `compact_silver.py` merges the files of a **closed** day (yesterday by default; today is refused) for both Silver datasets. It runs by hand in the Spark image and needs no running stack:
