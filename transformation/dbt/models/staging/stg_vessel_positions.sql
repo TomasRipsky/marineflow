@@ -48,8 +48,8 @@ staged as (
         p.latitude,
         p.longitude,
         p.ocean_region,
-        p.nearest_port,
-        p.eez_country,
+        p.port_name,
+        p.port_country,
         p.is_in_port_zone,
         p.distance_to_port_km,
 

@@ -74,7 +74,7 @@ daily_summary as (
 
         -- Activity counts
         count(*)                                                    as position_count,
-        count(distinct nearest_port)                                as distinct_ports_visited,
+        count(distinct port_name)                                as distinct_ports_visited,
         countif(is_in_port_zone = true)                             as positions_in_port,
         countif(is_in_port_zone = false or is_in_port_zone is null) as positions_at_sea,
 
@@ -111,7 +111,7 @@ daily_summary as (
         max(minutes_since_prev)                                    as max_ais_gap_minutes,
 
         -- Port info
-        max(nearest_port)                                          as last_known_port,
+        max(port_name)                                          as last_known_port,
         max(destination_clean)                                     as declared_destination,
 
         -- Lineage

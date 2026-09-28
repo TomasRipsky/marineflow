@@ -19,8 +19,8 @@
 # Enrichments derived here for the first time:
 #   flag_country         — from the MMSI's MID prefix (reference_data.py)
 #   ocean_region         — coarse bounding boxes on lat/lon, first match wins
-#   nearest_port         — the major port whose box contains the position (null elsewhere)
-#   eez_country          — country of that port; NOT a real EEZ (null outside port boxes)
+#   port_name            — the major port whose box contains the position (null elsewhere)
+#   port_country         — country of that port (null outside port boxes; not an EEZ)
 #   is_in_port_zone      — inside one of the 15 port boxes
 #   distance_to_port_km  — approximate distance to that port: 111 km per degree, no
 #                          latitude correction (null outside port boxes)
@@ -282,8 +282,8 @@ def enrich_geospatial(df):
         port_lon_expr = F.when(near, F.lit(p_lon)).otherwise(port_lon_expr)
 
     df = df.withColumns({
-        "nearest_port":    port_expr,
-        "eez_country":     country_expr,
+        "port_name":    port_expr,
+        "port_country":     country_expr,
         "is_in_port_zone": in_port_expr,
         "_port_lat":       port_lat_expr,
         "_port_lon":       port_lon_expr,
@@ -344,8 +344,8 @@ def transform_to_silver(df):
         "latitude",
         "longitude",
         "ocean_region",
-        "nearest_port",
-        "eez_country",
+        "port_name",
+        "port_country",
         "is_in_port_zone",
         "distance_to_port_km",
         # Movement

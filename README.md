@@ -20,7 +20,7 @@
 | **Streaming** | 5 Spark Structured Streaming jobs (bronze ×2, silver ×2, hot alerts) and 6 Kafka topics |
 | **Batch** | 1 dbt project: 1 staging view + 7 gold models, **104 data tests**; 1 safe compaction job |
 | **Orchestration** | 1 Airflow DAG, hourly, 8 tasks |
-| **Quality** | **71 unit tests**, 2 real-Spark smoke tests, GitHub Actions CI on every push |
+| **Quality** | **72 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
 | **Infrastructure** | Terraform (3 modules wired in: IAM, GCS, BigQuery), 14 Docker Compose services |
 | **Reference data** | 65 MID codes → 35 flag states · 79 AIS ship-type codes → 11 categories · 13 navigation statuses · 15 port zones · 11 ocean boxes → 7 regions |
 
@@ -107,7 +107,7 @@ Bronze does no business logic. It parses the JSON against a fixed schema, keeps 
 | **Flag state** | From the MMSI's first three digits (MID): 65 codes → 35 countries, one shared table (`reference_data.py`) |
 | **Ship type** | 79 AIS codes → `cargo`, `tanker`, `passenger`, `fishing`, `tug`, `special_craft`, `sailing_or_pleasure`, `high_speed_craft`, `wing_in_ground`, `other`, `unknown` |
 | **Navigation status** | 13 codes → labels such as `at_anchor`, `moored`, `under_way_engine` (reserved codes become `unknown_<n>`) |
-| **Geography** | 11 bounding boxes → 7 ocean regions (first match wins); 15 major-port zones → `nearest_port`, `is_in_port_zone` |
+| **Geography** | 11 bounding boxes → 7 ocean regions (first match wins); 15 major-port zones → `port_name`, `port_country`, `is_in_port_zone` |
 | **Movement** | Speed and heading change against the vessel's previous message |
 
 These lookups are deliberately coarse; see [Known limitations](#14-known-limitations).
@@ -416,8 +416,8 @@ Today the jobs run with **your own credentials** (Application Default Credential
 
 ```mermaid
 flowchart LR
-    change["Change"] --> unit["71 unit tests<br/>no Spark, no GCP"]
-    unit --> smoke["2 Spark smoke tests<br/>real Spark and Parquet, in the project image"]
+    change["Change"] --> unit["72 unit tests<br/>no Spark, no GCP"]
+    unit --> smoke["3 Spark smoke tests<br/>real Spark and Parquet, in the project image"]
     smoke --> ci["GitHub Actions<br/>compile, tests, dbt parse"]
     ci --> main["main"]
     main --> dbt["dbt run and 104 data tests<br/>in BigQuery, hourly"]
@@ -426,7 +426,7 @@ flowchart LR
 | Layer | What it checks | Where it runs |
 |---|---|---|
 | **Unit tests** (`tests/`) | Reference mappings across layers; AIS "not available" handling; hot path logic including timeouts; compaction commit and crash recovery; that the DAG runs every gold model; that Compose passes the variables the jobs read; that Terraform external tables match what the jobs write | Local, CI |
-| **Smoke tests** (`tests/smoke/`) | The hot path on real Spark (pinned pandas/pyarrow, Python 3.8); the compaction on real Parquet: normal run, late file, crash and recovery, dry run, size-based split | Local, in the Spark image |
+| **Smoke tests** (`tests/smoke/`) | The hot path on real Spark (pinned pandas/pyarrow, Python 3.8); the compaction on real Parquet: normal run, late file, crash and recovery, dry run, size-based split; the Silver transformation on hand-made rows: ports, flags, ocean regions, "not available" values, navigation labels | Local, in the Spark image |
 | **dbt parse** | The project compiles with `dbt-bigquery 1.8.2`, without credentials | CI |
 | **dbt data tests** | 104 tests on the gold models and the Silver sources | After each hourly run |
 
@@ -457,6 +457,7 @@ Testing found real problems. These are the ones worth remembering, and how each 
 | Loitering compared `at anchor` while Silver writes `at_anchor`, and `NOT IN` dropped null statuses | Reading both layers together | Exact labels, nulls kept |
 | SOG 102.3 and COG 360 were treated as real values, producing false acceleration alerts | Hot path test | Turned into null |
 | A "possible ship-to-ship transfer" flag could never be true | Tracing where its inputs come from | Removed, and documented |
+| Columns called `nearest_port`, `eez_country` and `crossed_eez_during_gap` did not mean what their names said (a port *zone*, that port's country, a port-to-port gap) | Reading how each is computed | Renamed `port_name`, `port_country`, `reappeared_in_other_port` |
 | A Terraform column the job never wrote; a connection test that disabled TLS verification | Schema alignment test; code review | Removed; test now mirrors the producer |
 
 ---
@@ -512,7 +513,7 @@ marineflow/
 
 - **Spark runs in local mode**, one container per job, started by hand. Production would use Dataproc or GKE and a supervisor that restarts jobs.
 - **Silver deduplication and movement deltas work per micro-batch.** The first position of a vessel in each batch has null speed and heading change, and a duplicate that lands in another batch is not removed.
-- **The reference lookups are coarse on purpose.** Flags come from 65 MIDs (35 countries); other vessels have a null flag. Ocean regions are bounding boxes: the Black Sea, the Sea of Marmara and the two sides of Central America are not modelled. `nearest_port`, `eez_country` and `distance_to_port_km` only exist inside 0.3–0.5° boxes around 15 ports, `eez_country` is that port's country and not a real exclusive economic zone, and the distance uses 111 km per degree without a latitude correction. `crossed_eez_during_gap` is therefore a proxy: it needs both ends of the gap to be inside port zones.
+- **The reference lookups are coarse on purpose.** Flags come from 65 MIDs (35 countries); other vessels have a null flag. Ocean regions are bounding boxes: the Black Sea, the Sea of Marmara and the two sides of Central America are not modelled. `port_name`, `port_country` and `distance_to_port_km` only exist inside 0.3–0.5° boxes around 15 ports: `port_name` is the port whose zone contains the position (not the nearest port), `port_country` is that port's country (not an exclusive economic zone), and the distance uses 111 km per degree without a latitude correction. `reappeared_in_other_port` needs both ends of a gap to be inside port zones, so it only catches port-to-port gaps.
 - **There is no ship-to-ship (STS) transfer detection.** An earlier flag could never be true and was removed. A real version needs a port catalogue (for example the World Port Index) loaded as a dbt seed and a BigQuery geospatial join; 15 ports are far too few to say "far from any port".
 - **Small files pile up** until you run the compaction, which is manual. Bronze is never compacted.
 - **The hot path has one speed limit** (35 kn) and no Prometheus target.

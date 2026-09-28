@@ -10,7 +10,7 @@
 -- One row per loitering session: a vessel moving slowly (0.1-4 kn) outside port
 -- zones for more than 180 minutes inside the same 0.1-degree cell.
 --
--- nearest_port, eez_country and distance_to_port_km are deliberately not carried
+-- port_name, port_country and distance_to_port_km are deliberately not carried
 -- over: Silver only fills them inside the port boxes and this model only looks
 -- outside them, so they would always be null.
 

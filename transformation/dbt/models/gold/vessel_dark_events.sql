@@ -15,13 +15,13 @@ with ordered_positions as (
         latitude,
         longitude,
         ocean_region,
-        nearest_port,
-        eez_country,
+        port_name,
+        port_country,
         event_timestamp,
         lag(event_timestamp) over (partition by mmsi order by event_timestamp) as prev_timestamp,
         lag(latitude)        over (partition by mmsi order by event_timestamp) as prev_lat,
         lag(longitude)       over (partition by mmsi order by event_timestamp) as prev_lon,
-        lag(nearest_port)    over (partition by mmsi order by event_timestamp) as prev_nearest_port
+        lag(port_name)    over (partition by mmsi order by event_timestamp) as prev_port_name
     from {{ ref('stg_vessel_positions') }}
     {% if is_incremental() %}
         where event_timestamp >= (
@@ -46,9 +46,9 @@ dark_events as (
         latitude                                                     as reappearance_lat,
         longitude                                                    as reappearance_lon,
         ocean_region,
-        eez_country,
-        prev_nearest_port                                            as last_known_port,
-        nearest_port                                                 as reappearance_port,
+        port_country,
+        prev_port_name                                            as last_known_port,
+        port_name                                                 as reappearance_port,
         st_distance(
             st_geogpoint(prev_lon, prev_lat),
             st_geogpoint(longitude, latitude)
@@ -70,9 +70,9 @@ select
     -- suspicious. It is only a proxy for crossing jurisdictions: it needs both the last and the
     -- first position of the gap to be inside one of the 15 port boxes.
     case
-        when eez_country is not null
+        when port_country is not null
          and last_known_port is not null
          and reappearance_port != last_known_port then true
         else false
-    end as crossed_eez_during_gap
+    end as reappeared_in_other_port
 from dark_events
