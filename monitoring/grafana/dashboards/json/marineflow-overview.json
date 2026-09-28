@@ -820,7 +820,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (topic) (kafka_topic_partition_current_offset - kafka_topic_partition_oldest_offset)",
+          "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic!~\"__.*\"} - kafka_topic_partition_oldest_offset{topic!~\"__.*\"})",
           "legendFormat": "{{topic}}",
           "editorMode": "code",
           "instant": true,

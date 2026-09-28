@@ -60,6 +60,28 @@ class DashboardShapeTest(unittest.TestCase):
                     self.assertTrue(any(re.fullmatch(name, j) for j in PROMETHEUS_JOBS), f"{path.name}: {name}")
 
 
+class InternalTopicTest(unittest.TestCase):
+    """__consumer_offsets is a real Kafka internal topic (50 partitions by default) that appears
+    as soon as anything commits a consumer offset. A query that aggregates 'by (topic)' or counts
+    topics/partitions across the whole cluster must exclude it, or it leaks into every panel that
+    is not pinned to one specific topic="..." ."""
+    METRICS = ("kafka_topic_partitions", "kafka_topic_partition_current_offset",
+               "kafka_topic_partition_oldest_offset", "kafka_topic_partition_under_replicated_partition")
+
+    def test_every_cluster_wide_kafka_metric_excludes_internal_topics(self):
+        # metric{...labels...} or a bare metric with no braces at all
+        call = re.compile(r"(%s)(\{([^}]*)\})?" % "|".join(self.METRICS))
+        for path in DASHBOARDS:
+            for p in load(path)["panels"]:
+                for t in p.get("targets", []):
+                    expr = t.get("expr", "")
+                    for metric, _, labels in call.findall(expr):
+                        # pinned to one topic, or to a regex anchored on our own prefixes: can't match __consumer_offsets
+                        if 'topic="' in labels or re.search(r'topic=~"(vessel-|dead-letter-queue)', labels):
+                            continue
+                        self.assertIn("__.*", labels, f"{path.name}: {p['title']}: {metric}{{{labels}}}")
+
+
 class ScrollAndDivisionTest(unittest.TestCase):
     def test_the_map_does_not_capture_the_mouse_wheel(self):
         panels = [p for p in load(GRAFANA / "dashboards/json/marineflow-live.json")["panels"] if p["type"] == "geomap"]

@@ -217,4 +217,6 @@ Some gold tables (dark events, speed anomalies, loitering, risk score) legitimat
 | `bq query` on a Silver table fails on a column name | Step 5 was skipped: the external tables still have the old schema |
 | The DAG run ends after the first task with everything skipped | Silver has no file from the last two hours. Check the Silver jobs and the producer |
 | Grafana panels are empty | The stack was up less than a minute, or the job was not started with `spark.sql.streaming.metricsEnabled=true` |
+| A job's driver process is just gone (no java process in `docker exec <container> ps aux`, "Spark jobs up" flickers below 4/4) | Likely OOM-killed: check `docker inspect <container> --format '{{.State.OOMKilled}}'`. Five 1 GB Spark drivers plus Kafka, Airflow, Grafana and Prometheus is heavy for Docker Desktop's default VM memory (often ~8 GB). Raise the VM's memory limit (Docker Desktop → Settings → Resources), or don't run all five jobs at once. Restart the affected job by hand; nothing supervises these processes |
+| A job's very first batch after a restart is far slower than 30 s | Expected: it is catching up on everything the topic buffered while the job was down. Later batches return to normal once it clears the backlog |
 | *Live traffic* map is empty | `vessel-positions-bronze` is empty: Bronze is not running or the producer is not connected |

@@ -148,7 +148,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(count by (topic) (kafka_topic_partitions))",
+          "expr": "count(count by (topic) (kafka_topic_partitions{topic!~\"__.*\"}))",
           "legendFormat": "",
           "editorMode": "code",
           "instant": false,
@@ -213,7 +213,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(kafka_topic_partitions)",
+          "expr": "sum(kafka_topic_partitions{topic!~\"__.*\"})",
           "legendFormat": "",
           "editorMode": "code",
           "instant": false,
@@ -278,7 +278,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(kafka_topic_partition_under_replicated_partition)",
+          "expr": "sum(kafka_topic_partition_under_replicated_partition{topic!~\"__.*\"})",
           "legendFormat": "",
           "editorMode": "code",
           "instant": false,
@@ -685,7 +685,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (topic) (kafka_topic_partition_current_offset - kafka_topic_partition_oldest_offset)",
+          "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic!~\"__.*\"} - kafka_topic_partition_oldest_offset{topic!~\"__.*\"})",
           "legendFormat": "{{topic}}",
           "editorMode": "code",
           "instant": true,
@@ -913,7 +913,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (topic) (kafka_topic_partitions)",
+          "expr": "max by (topic) (kafka_topic_partitions{topic!~\"__.*\"})",
           "legendFormat": "",
           "editorMode": "code",
           "instant": true,
@@ -926,7 +926,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (topic) (kafka_topic_partition_current_offset - kafka_topic_partition_oldest_offset)",
+          "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic!~\"__.*\"} - kafka_topic_partition_oldest_offset{topic!~\"__.*\"})",
           "legendFormat": "",
           "editorMode": "code",
           "instant": true,
