@@ -361,7 +361,7 @@ The tests never import the Spark jobs (they call `load_dotenv()` and need PySpar
 
 `tests/smoke/hot_alerts_smoke.py` runs the hot path on real Spark inside the project's Spark image (the Docker command is in its docstring). Fakes cannot catch everything: it is what showed that Spark hands the per-vessel state back as a tuple.
 
-GitHub Actions (`.github/workflows/ci.yml`) compiles the sources, runs the tests and runs `dbt parse` (dbt-bigquery 1.8.2, no credentials needed) on every push to `main` and on pull requests.
+GitHub Actions (`.github/workflows/ci.yml`) compiles the sources, runs the tests and runs `dbt parse` (dbt-bigquery 1.8.2, no credentials needed) on every push to any branch (and can be started by hand from the Actions tab); the checks also show up on pull requests.
 
 ### Local ports
 
