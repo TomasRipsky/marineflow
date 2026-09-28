@@ -250,6 +250,7 @@ models:
       - name: reported_sog
         description: > 
           The AIS specification for sog (Speed over ground) shows that 102.3 knots is reported when the vessel speed is unavailable.
+          Silver turns that value into null, so the range test below is a guard that should not fire.
         tests:
           - dbt_utils.expression_is_true:
               expression: "is null or (reported_sog >= 0 and reported_sog < 102.3)"

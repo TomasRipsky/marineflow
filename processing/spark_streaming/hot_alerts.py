@@ -78,6 +78,9 @@ SPEED_CHANGE_ACCEL_THRESHOLD = 10.0       # alone -> SUDDEN_ACCELERATION
 # Same threshold as vessel_dark_events.sql's MEDIUM tier
 GAP_TIMEOUT_MINUTES = 120
 
+# AIS reports 102.3 kn when speed over ground is not available
+SOG_NOT_AVAILABLE = 102.3
+
 
 def haversine_nm(lat1, lon1, lat2, lon2) -> float:
     """Great-circle distance in nautical miles."""
@@ -88,6 +91,13 @@ def haversine_nm(lat1, lon1, lat2, lon2) -> float:
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
     dist_km = 2 * R_km * math.asin(math.sqrt(a))
     return dist_km / 1.852
+
+
+def clean_sog(value):
+    """Reported SOG in knots, or None if it is missing (NaN in pandas) or the AIS 'not available' value."""
+    if value is None or value != value or value >= SOG_NOT_AVAILABLE:
+        return None
+    return float(value)
 
 
 def get_source_schema():
@@ -152,7 +162,7 @@ def process_vessel(key, pdf_iter, state):
 
     for pdf in pdf_iter:
         for _, row in pdf.iterrows():
-            curr_lat, curr_lon, curr_sog = row["Latitude"], row["Longitude"], row["Sog"]
+            curr_lat, curr_lon, curr_sog = row["Latitude"], row["Longitude"], clean_sog(row["Sog"])
             curr_ts_str = row["time_utc"]
             if curr_lat is None or curr_lon is None or curr_ts_str is None:
                 continue
@@ -166,7 +176,10 @@ def process_vessel(key, pdf_iter, state):
                     if dt_hours > 0 and prev.last_lat is not None:
                         dist_nm = haversine_nm(prev.last_lat, prev.last_lon, curr_lat, curr_lon)
                         calc_speed = dist_nm / dt_hours
-                        speed_change = abs((curr_sog or 0.0) - (prev.last_sog or 0.0))
+                        if curr_sog is not None and prev.last_sog is not None:
+                            speed_change = abs(curr_sog - prev.last_sog)
+                        else:
+                            speed_change = 0.0  # unknown SOG is no evidence of a speed change
 
                         alert_type = None
                         if calc_speed > MAX_SPEED_KNOTS and speed_change > SPEED_CHANGE_SPOOFING_THRESHOLD:

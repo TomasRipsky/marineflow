@@ -10,8 +10,8 @@
 #   ShipName          → vessel_name (trimmed)
 #   Latitude          → latitude
 #   Longitude         → longitude
-#   Sog               → speed_over_ground
-#   Cog               → course_over_ground
+#   Sog               → speed_over_ground (102.3 → null)
+#   Cog               → course_over_ground (360 → null)
 #   TrueHeading       → heading (511 → null)
 #   NavigationalStatus (int) → navigational_status (string)
 #   time_utc          → event_timestamp
@@ -81,6 +81,12 @@ MAX_OFFSETS_PER_TRIGGER = int(os.getenv("SILVER_MAX_OFFSETS_PER_TRIGGER", "1000"
 # =============================================================================
 # Reference data
 # =============================================================================
+
+# AIS "not available" values for PositionReport fields, turned into null in
+# rename_bronze_fields(): SOG 102.3 kn and COG 360°. The heading sentinel (511)
+# is handled there too.
+AIS_SOG_NOT_AVAILABLE = 102.3
+AIS_COG_NOT_AVAILABLE = 360.0
 
 # AIS navigational status (ITU-R M.1371). Reserved codes 9, 10 and 13 are
 # emitted as "unknown_<code>" by rename_bronze_fields().
@@ -214,8 +220,8 @@ def rename_bronze_fields(df):
         "vessel_name":         F.trim(F.col("ShipName")),
         "latitude":            F.col("Latitude"),
         "longitude":           F.col("Longitude"),
-        "speed_over_ground":   F.col("Sog"),
-        "course_over_ground":  F.col("Cog"),
+        "speed_over_ground":   F.when(F.col("Sog") < AIS_SOG_NOT_AVAILABLE, F.col("Sog")),
+        "course_over_ground":  F.when(F.col("Cog") < AIS_COG_NOT_AVAILABLE, F.col("Cog")),
         "heading":             F.when(F.col("TrueHeading") != 511,
                                       F.col("TrueHeading")).otherwise(None),
         "navigational_status": nav_expr,
