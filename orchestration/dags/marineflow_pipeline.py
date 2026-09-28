@@ -8,12 +8,15 @@
 #   - Launch Bronze or Silver Spark jobs — these run as continuous Structured
 #     Streaming processes (Docker locally, Dataproc in production). They are
 #     not batch jobs with a start/end and should not be managed by Airflow.
+#   - Compact the small Silver Parquet files. That is a Spark job
+#     (processing/spark_streaming/compact_silver.py) run by hand; the Airflow
+#     image has no Spark, and the compaction that used to live here deleted the
+#     partition it was compacting.
 #
 # What this DAG DOES:
 #   - Verify new Silver data has arrived since the last run
 #   - Run dbt to materialize Gold models (vessel_activity_summary, port_traffic,etc)
 #   - Run dbt data quality tests
-#   - Daily: compact small Silver Parquet files into fewer larger files
 #
 # Schedule: every hour at :05 (gives Silver ~5 min to process the latest data)
 #
@@ -36,9 +39,6 @@
 #   └────────────┬───────────┘
 #                │
 #             dbt_test
-#                │
-#     [daily @ 02:05 UTC only]
-#           compact_gcs
 # =============================================================================
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.python import ShortCircuitOperator
 from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
 
@@ -115,73 +115,13 @@ def check_silver_data_arrived(**context) -> bool:
         return False
 
 
-def is_daily_run(**context) -> bool:
-    """
-    Gate for the daily compaction task.
-    Returns True only at the 02:05 UTC run.
-    """
-    return context["data_interval_start"].hour == 2
-
-
-def compact_silver_partition(**context) -> None:
-    """
-    Compact small Silver Parquet files from the previous day.
-
-    Bronze and Silver Structured Streaming jobs write one small Parquet file
-    per micro-batch trigger (every 30-60 seconds). Over a day this creates
-    ~1440 small files per partition. Compaction merges them into 1 file,
-    improving query performance on the BigQuery external table.
-
-    In production this would be replaced by Delta Lake ACID compaction
-    or a Dataproc job. For local development PySpark runs inline.
-    """
-    from pyspark.sql import SparkSession
-
-    execution_dt = context["data_interval_start"]
-    prev_day     = (execution_dt - timedelta(days=1)).strftime("%Y-%m-%d")
-    silver_path  = f"gs://{GCS_BUCKET}/silver/vessel_positions/partition_date={prev_day}"
-
-    context["task_instance"].log.info(f"Compacting: {silver_path}")
-
-    spark = (
-        SparkSession.builder
-        .appName("MarineFlow-Compaction")
-        .master("local[2]")
-        .config("spark.hadoop.fs.gs.impl",
-                "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl",
-                "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
-        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
-        .getOrCreate()
-    )
-
-    try:
-        df    = spark.read.parquet(silver_path)
-        count = df.count()
-
-        if count == 0:
-            context["task_instance"].log.info("No data to compact")
-            return
-
-        df.coalesce(1).write.mode("overwrite").parquet(silver_path)
-        context["task_instance"].log.info(
-            f"Compacted {count} records into single Parquet file"
-        )
-    except Exception as e:
-        context["task_instance"].log.warning(
-            f"Compaction skipped — partition may not exist yet: {e}"
-        )
-    finally:
-        spark.stop()
-
-
 # =============================================================================
 # DAG
 # =============================================================================
 
 with DAG(
     dag_id="marineflow_pipeline",
-    description="Hourly Gold materialization + daily Silver compaction",
+    description="Hourly Gold materialization (dbt run + test)",
     schedule_interval="5 * * * *",
     start_date=days_ago(1),
     catchup=False,
@@ -203,13 +143,18 @@ locally they run in dedicated Docker containers.
 4. **dbt_erratic_course** — `vessel_erratic_course` (reads `vessel_activity_summary`, so it waits for step 2)
 5. **dbt_risk_score** — aggregates the three detection models
 6. **dbt_test** — run data quality tests (not_null, unique, accepted_values)
-7. **compact_gcs** — merge small Silver Parquet files *(daily at 02:05 UTC only)*
+
+### Silver compaction
+Not part of this DAG. `processing/spark_streaming/compact_silver.py` merges the
+small Parquet files of a closed day; run it by hand in the Spark image (see the
+README). The Airflow image has no Spark, and the compaction that used to be here
+deleted the partition it was compacting.
 
 ### Production upgrade path
 Replace `BashOperator` dbt tasks with `KubernetesPodOperator` or
 `DbtCloudRunJobOperator` for containerized, isolated dbt execution.
-Replace `compact_silver_partition` PythonOperator with a Dataproc job
-or Delta Lake automatic compaction.
+Run the Silver compaction as a scheduled Dataproc job, or use Delta Lake
+automatic compaction.
     """,
 ) as dag:
 
@@ -274,22 +219,6 @@ or Delta Lake automatic compaction.
         doc_md="Run all data quality tests across Gold models.",
     )
 
-    # ── 6. Gate: daily only ────────────────────────────────────────────────
-    daily_gate = ShortCircuitOperator(
-        task_id="is_daily_run",
-        python_callable=is_daily_run,
-        provide_context=True,
-        doc_md="Only proceed to compaction at the 02:05 UTC run.",
-    )
-
-    # ── 7. Compact Silver GCS ──────────────────────────────────────────────
-    compact_gcs = PythonOperator(
-        task_id="compact_gcs",
-        python_callable=compact_silver_partition,
-        provide_context=True,
-        doc_md="Merge ~1440 daily small Parquet files into 1 per partition.",
-    )
-
     # ── Dependencies ───────────────────────────────────────────────────────
     #
     #   check_silver
@@ -299,11 +228,8 @@ or Delta Lake automatic compaction.
     #   dbt_speed   ──┼── dbt_risk_score ──┤  (detection models run in parallel)
     #   dbt_loitering─┘                    │
     #                                 dbt_test
-    #                                      │
-    #                             daily_gate ── compact_gcs
     #
     check_silver >> [dbt_batch, dbt_dark, dbt_speed, dbt_loitering]
     dbt_batch >> dbt_erratic
     [dbt_dark, dbt_speed, dbt_loitering] >> dbt_risk
     [dbt_erratic, dbt_risk] >> dbt_test
-    dbt_test >> daily_gate >> compact_gcs
