@@ -30,17 +30,23 @@ variable "ais_api_key_secret" {
   default     = "ais-api-key"
 }
 
-variable "pubsub_topic_positions" {
+variable "kafka_bootstrap_servers" {
+  description = "Kafka bootstrap servers the producer publishes to"
+  type        = string
+  default     = "localhost:9092"
+}
+
+variable "kafka_topic_positions" {
   type    = string
   default = "vessel-positions"
 }
 
-variable "pubsub_topic_metadata" {
+variable "kafka_topic_metadata" {
   type    = string
   default = "vessel-metadata"
 }
 
-variable "pubsub_topic_dlq" {
+variable "kafka_topic_dlq" {
   type    = string
   default = "dead-letter-queue"
 }
