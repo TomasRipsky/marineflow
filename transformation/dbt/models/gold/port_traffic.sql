@@ -79,14 +79,23 @@ daily_port_traffic as (
         count(distinct p.mmsi)                      as unique_vessels,
         count(*)                                    as total_position_reports,
 
-        -- Vessel type breakdown
-        countif(p.vessel_type_normalized = 'cargo')      as cargo_vessels,
-        countif(p.vessel_type_normalized = 'tanker')     as tanker_vessels,
-        countif(p.vessel_type_normalized = 'passenger')  as passenger_vessels,
-        countif(p.vessel_type_normalized = 'fishing')    as fishing_vessels,
-        countif(p.vessel_type_normalized = 'tug')        as tug_vessels,
-        countif(p.vessel_type_normalized is null
-             or p.vessel_type_normalized = 'other')      as other_vessels,
+        -- Vessel type breakdown: distinct vessels per Silver category. A vessel
+        -- has a single type (latest metadata), so these columns sum to
+        -- unique_vessels. other_vessels is the catch-all (other, unknown,
+        -- wing_in_ground). Keep the categories in sync with silver_metadata.py.
+        count(distinct if(p.vessel_type_normalized = 'cargo',               p.mmsi, null)) as cargo_vessels,
+        count(distinct if(p.vessel_type_normalized = 'tanker',              p.mmsi, null)) as tanker_vessels,
+        count(distinct if(p.vessel_type_normalized = 'passenger',           p.mmsi, null)) as passenger_vessels,
+        count(distinct if(p.vessel_type_normalized = 'fishing',             p.mmsi, null)) as fishing_vessels,
+        count(distinct if(p.vessel_type_normalized = 'tug',                 p.mmsi, null)) as tug_vessels,
+        count(distinct if(p.vessel_type_normalized = 'special_craft',       p.mmsi, null)) as special_craft_vessels,
+        count(distinct if(p.vessel_type_normalized = 'sailing_or_pleasure', p.mmsi, null)) as sailing_or_pleasure_vessels,
+        count(distinct if(p.vessel_type_normalized = 'high_speed_craft',    p.mmsi, null)) as high_speed_craft_vessels,
+        count(distinct if(
+            coalesce(p.vessel_type_normalized, 'unknown') not in (
+                'cargo', 'tanker', 'passenger', 'fishing', 'tug',
+                'special_craft', 'sailing_or_pleasure', 'high_speed_craft'
+            ), p.mmsi, null))                                                            as other_vessels,
 
         -- Flag diversity
         count(distinct p.flag_country)              as distinct_flag_countries,
