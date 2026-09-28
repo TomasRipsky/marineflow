@@ -1,0 +1,9 @@
+# Test dependencies (CI and local). The Spark jobs are never imported by the
+# tests, so PySpark is not needed here.
+pytest==8.3.4
+pyyaml==6.0.2
+
+# Same pandas/numpy as processing/spark_streaming/requirements.txt, so the
+# hot path logic is tested against the version that runs in the Spark image.
+pandas==1.5.3
+numpy==1.24.4
