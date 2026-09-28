@@ -159,7 +159,7 @@ cd ingestion/ais_producer && python main.py
 
 Give it two or three minutes, then walk the pipeline from the front to the back.
 
-**Kafka** (the offsets must grow; the `-bronze` topics trail the raw ones a little because Bronze rejects impossible coordinates):
+**Kafka** (the offsets must grow; the `-bronze` topics trail the raw ones a little; a sustained large gap usually means the Bronze job fell behind or crashed (check `docker inspect <container> --format '{{.State.OOMKilled}}'`), not that it is rejecting data — see the Overview dashboard's *Bronze gap* tile):
 
 ```bash
 for t in vessel-positions vessel-positions-bronze vessel-metadata vessel-metadata-bronze vessel-alerts dead-letter-queue; do

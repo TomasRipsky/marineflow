@@ -397,7 +397,7 @@ Why it is built this way: object stores have no atomic rename, and the previous 
 
 | Dashboard | What it shows | Datasource |
 |---|---|---|
-| **Overview** (home) | Health tiles (broker, Spark jobs up, positions per second, Bronze rejects, alerts and dead letters in the last hour), throughput per topic, Spark input vs processing rate, service availability, JVM heap | Prometheus |
+| **Overview** (home) | Health tiles (broker, Spark jobs up, positions per second, Bronze gap, alerts and dead letters in the last hour), throughput per topic, Spark input vs processing rate, service availability, JVM heap | Prometheus |
 | **Live traffic** | A heat map of the latest vessel positions, the latest alerts and alert counts by type, read straight from Kafka | Kafka |
 | **Spark streaming** | Input rate, processing rate, batch latency against the 30 s trigger, headroom, JVM heap; a selector filters by job | Prometheus |
 | **Kafka** | Brokers, topics, partitions, messages per second, messages retained, balance across partitions and a topic inventory table | Prometheus |

@@ -290,8 +290,8 @@
     },
     {
       "type": "stat",
-      "title": "Bronze rejects",
-      "description": "Share of raw positions that Bronze dropped over the last 15 minutes (invalid coordinates, wrong message type). Shows 'no traffic' while the producer is not sending.",
+      "title": "Bronze gap",
+      "description": "How much Bronze's write rate trails the raw topic's, over the last 15 minutes. Almost always a lag or crash symptom, not data quality: validate() only drops null/out-of-range coordinates and the AIS 'not available' sentinels (91/181), which real feeds rarely send. Check 'Spark jobs up' first. Shows 'no traffic' while the producer is not sending.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

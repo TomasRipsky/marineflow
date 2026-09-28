@@ -233,13 +233,21 @@ def overview():
     # Divide two 15-minute increases, not two rates: Bronze trails the raw topic by a batch or two, so short
     # windows swing wildly. "> 0" drops the series while nothing arrives (0/0 used to render as -Inf%), and
     # clamp_min stops a Bronze catch-up burst from showing a negative share.
-    d.add(stat("Bronze rejects",
+    #
+    # Renamed from "Bronze rejects": this is the gap between the raw and Bronze write rates, and in practice
+    # Bronze's own validate() almost never rejects a record (aisstream.io's coordinates are clean — a sample
+    # of 3000 raw messages had zero nulls, zero out-of-range, zero AIS "not available" sentinels). A sustained
+    # high value here means Bronze fell behind or crashed — check "Spark jobs up" and the container's
+    # OOMKilled flag (`docker inspect <container> --format '{{.State.OOMKilled}}'`) before assuming bad data.
+    d.add(stat("Bronze gap",
                'clamp_min(1 - sum(increase(kafka_topic_partition_current_offset{topic="vessel-positions-bronze"}[15m])) '
                '/ (sum(increase(kafka_topic_partition_current_offset{topic="vessel-positions"}[15m])) > 0), 0)',
                12, 3, unit="percentunit", th=thresholds("green", (0.02, "orange"), (0.1, "red")), decimals=1,
                no_value="no traffic", spark_line=False,
-               description="Share of raw positions that Bronze dropped over the last 15 minutes (invalid coordinates, "
-                           "wrong message type). Shows 'no traffic' while the producer is not sending."))
+               description="How much Bronze's write rate trails the raw topic's, over the last 15 minutes. Almost "
+                           "always a lag or crash symptom, not data quality: validate() only drops null/out-of-range "
+                           "coordinates and the AIS 'not available' sentinels (91/181), which real feeds rarely send. "
+                           "Check 'Spark jobs up' first. Shows 'no traffic' while the producer is not sending."))
     d.add(stat("Alerts (1 h)",
                'sum(increase(kafka_topic_partition_current_offset{topic="vessel-alerts"}[1h]))', 16, 3,
                th=thresholds("green", (1, "orange"), (50, "red")), decimals=0, spark_line=False,
