@@ -7,6 +7,14 @@
 # always the pyspark Python package used by pip-level imports)
 pyspark==3.5.0
 
+# pandas UDFs / applyInPandasWithState (hot_alerts.py). apache/spark:3.5.0 ships
+# Python 3.8 without pandas or pyarrow, and Python 3.8 caps the versions:
+# pandas <= 2.0.3, numpy <= 1.24.4. These are the combination Spark 3.5 is
+# tested against. Keep the pins in requirements-dev.txt in sync.
+pandas==1.5.3
+pyarrow==12.0.1
+numpy==1.24.4
+
 # GCS client — used outside the Hadoop connector (diagnostics, checks)
 google-cloud-storage==2.16.0
 

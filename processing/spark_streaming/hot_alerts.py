@@ -39,6 +39,7 @@ import math
 import os
 import sys
 import time
+from collections import namedtuple
 from datetime import timedelta
 
 import structlog
@@ -80,6 +81,10 @@ GAP_TIMEOUT_MINUTES = 120
 
 # AIS reports 102.3 kn when speed over ground is not available
 SOG_NOT_AVAILABLE = 102.3
+
+# Spark hands the per-vessel state back as a plain tuple in get_state_schema()
+# order, not as an object with attributes, so it is wrapped for readable access.
+VesselState = namedtuple("VesselState", ["last_lat", "last_lon", "last_sog", "last_time_utc"])
 
 
 def haversine_nm(lat1, lon1, lat2, lon2) -> float:
@@ -143,11 +148,11 @@ def process_vessel(key, pdf_iter, state):
 
     (mmsi,) = key
     alerts = []
-    now_iso = pd.Timestamp.utcnow().isoformat()
+    now_iso = pd.Timestamp.now("UTC").isoformat()
 
     if state.hasTimedOut:
         if state.exists:
-            prev = state.get
+            prev = VesselState(*state.get)
             alerts.append({
                 "mmsi": mmsi,
                 "alert_type": "AIS_GAP",
@@ -169,7 +174,7 @@ def process_vessel(key, pdf_iter, state):
             curr_ts = pd.Timestamp(curr_ts_str)
 
             if state.exists:
-                prev = state.get
+                prev = VesselState(*state.get)
                 try:
                     prev_ts = pd.Timestamp(prev.last_time_utc)
                     dt_hours = (curr_ts - prev_ts).total_seconds() / 3600.0
@@ -205,8 +210,7 @@ def process_vessel(key, pdf_iter, state):
                 except (ValueError, TypeError):
                     pass  # malformed timestamp — skip anomaly check, still update state below
 
-            from pyspark.sql import Row
-            state.update(Row(
+            state.update(VesselState(
                 last_lat=curr_lat, last_lon=curr_lon,
                 last_sog=curr_sog, last_time_utc=curr_ts_str,
             ))
