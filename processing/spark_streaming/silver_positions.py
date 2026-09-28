@@ -26,6 +26,10 @@
 #   speed_change_rate    — delta vs previous message per vessel
 #   heading_change_degrees — delta vs previous message per vessel
 #
+# Fields intentionally excluded (belong to vessel_metadata):
+#   vessel_type_normalized — from ShipStaticData, joined in Gold via dbt
+#   destination_clean      — from ShipStaticData, joined in Gold via dbt
+#
 # Run:
 #   spark-submit \
 #     --jars jars/gcs-connector-hadoop3-latest.jar,jars/spark-bigquery-0.40.0.jar \
@@ -173,8 +177,6 @@ def get_bronze_schema():
         StructField("ShipName",                  StringType(),    True),
         StructField("time_utc",                  TimestampType(), True),
         StructField("ingestion_timestamp",       TimestampType(), True),
-        StructField("_pubsub_message_id",        StringType(),    True),
-        StructField("_pubsub_publish_time",      StringType(),    True),
         StructField("_source_system",            StringType(),    True),
         StructField("_batch_id",                 StringType(),    True),
         StructField("_pipeline_version",         StringType(),    True),

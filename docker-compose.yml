@@ -56,7 +56,8 @@ services:
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-positions-bronze --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092 &&
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-metadata --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092 &&
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-metadata-bronze --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092 &&
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic dead-letter-queue --partitions 1 --replication-factor 1 --bootstrap-server kafka:29092
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic dead-letter-queue --partitions 1 --replication-factor 1 --bootstrap-server kafka:29092 &&
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic vessel-alerts --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092
     networks:
       - marineflow-net
     restart: "no"
@@ -318,6 +319,32 @@ services:
       - marineflow-net
 
   # ---------------------------------------------------------------------------
+  # Spark Hot Alerts — speed layer, Kafka-to-Kafka only, no GCS/BigQuery
+  # ---------------------------------------------------------------------------
+  spark-hot-alerts:
+    build:
+      context: ./processing
+      dockerfile: Dockerfile
+    image: marineflow-spark:3.5.0
+    container_name: marineflow-spark-hot-alerts
+    entrypoint: ["/bin/sleep", "infinity"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - SPARK_MASTER=local[2]
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC_POSITIONS_BRONZE=${KAFKA_TOPIC_POSITIONS_BRONZE:-vessel-positions-bronze}
+      - KAFKA_TOPIC_ALERTS=${KAFKA_TOPIC_ALERTS:-vessel-alerts}
+    volumes:
+      - ./processing:/opt/spark/processing
+      - ./processing/spark-conf/metrics.properties:/opt/spark/conf/metrics.properties:ro
+      - hot-alerts-checkpoint:/opt/spark/checkpoints/hot_alerts
+      - spark-ivy-cache:/opt/spark/.ivy2
+    networks:
+      - marineflow-net
+
+  # ---------------------------------------------------------------------------
   # Prometheus — pipeline metrics
   # ---------------------------------------------------------------------------
   prometheus:
@@ -360,6 +387,7 @@ volumes:
   airflow-logs:
   kafka-data:
   spark-ivy-cache:
+  hot-alerts-checkpoint:
 
 # =============================================================================
 # Networks
