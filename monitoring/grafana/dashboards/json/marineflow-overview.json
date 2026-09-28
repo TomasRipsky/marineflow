@@ -291,7 +291,7 @@
     {
       "type": "stat",
       "title": "Bronze rejects",
-      "description": "Share of raw positions that Bronze dropped (invalid coordinates, wrong message type).",
+      "description": "Share of raw positions that Bronze dropped over the last 15 minutes (invalid coordinates, wrong message type). Shows 'no traffic' while the producer is not sending.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -309,7 +309,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "1 - (sum(rate(kafka_topic_partition_current_offset{topic=\"vessel-positions-bronze\"}[5m])) / sum(rate(kafka_topic_partition_current_offset{topic=\"vessel-positions\"}[5m])))",
+          "expr": "clamp_min(1 - sum(increase(kafka_topic_partition_current_offset{topic=\"vessel-positions-bronze\"}[15m])) / (sum(increase(kafka_topic_partition_current_offset{topic=\"vessel-positions\"}[15m])) > 0), 0)",
           "legendFormat": "",
           "editorMode": "code",
           "instant": false,
@@ -340,14 +340,14 @@
             ]
           },
           "mappings": [],
-          "noValue": "0",
+          "noValue": "no traffic",
           "decimals": 1
         },
         "overrides": []
       },
       "options": {
         "colorMode": "background",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,

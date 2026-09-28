@@ -91,9 +91,9 @@ def text(title, content, x, y, w, h, transparent=True):
 
 
 def stat(title, expr, x, y, w=4, h=4, unit="short", th=None, decimals=None, description="", mappings=None,
-         suffix="", spark_line=True, color_mode="background", min_=None, max_=None):
+         suffix="", spark_line=True, color_mode="background", min_=None, max_=None, no_value="0"):
     defaults = {"unit": unit, "color": {"mode": "thresholds"}, "thresholds": th or thresholds("green"),
-                "mappings": mappings or [], "noValue": "0"}
+                "mappings": mappings or [], "noValue": no_value}
     if decimals is not None:
         defaults["decimals"] = decimals
     if suffix:
@@ -224,11 +224,16 @@ def overview():
     d.add(stat("Positions / s", topic_rate("vessel-positions").replace("sum by (topic) ", "sum "), 8, 3,
                th=thresholds("blue"), decimals=1,
                description="Position messages per second entering Kafka."))
+    # Divide two 15-minute increases, not two rates: Bronze trails the raw topic by a batch or two, so short
+    # windows swing wildly. "> 0" drops the series while nothing arrives (0/0 used to render as -Inf%), and
+    # clamp_min stops a Bronze catch-up burst from showing a negative share.
     d.add(stat("Bronze rejects",
-               '1 - (sum(rate(kafka_topic_partition_current_offset{topic="vessel-positions-bronze"}[5m])) '
-               '/ sum(rate(kafka_topic_partition_current_offset{topic="vessel-positions"}[5m])))',
+               'clamp_min(1 - sum(increase(kafka_topic_partition_current_offset{topic="vessel-positions-bronze"}[15m])) '
+               '/ (sum(increase(kafka_topic_partition_current_offset{topic="vessel-positions"}[15m])) > 0), 0)',
                12, 3, unit="percentunit", th=thresholds("green", (0.02, "orange"), (0.1, "red")), decimals=1,
-               description="Share of raw positions that Bronze dropped (invalid coordinates, wrong message type)."))
+               no_value="no traffic", spark_line=False,
+               description="Share of raw positions that Bronze dropped over the last 15 minutes (invalid coordinates, "
+                           "wrong message type). Shows 'no traffic' while the producer is not sending."))
     d.add(stat("Alerts (1 h)",
                'sum(increase(kafka_topic_partition_current_offset{topic="vessel-alerts"}[1h]))', 16, 3,
                th=thresholds("green", (1, "orange"), (50, "red")), decimals=0, spark_line=False,
@@ -297,7 +302,9 @@ def live():
            "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": thresholds("green"), "mappings": []},
                            "overrides": []},
            "options": {"view": {"id": "zero", "lat": 25, "lon": 15, "zoom": 2, "allLayers": True},
-                       "controls": {"showZoom": True, "mouseWheelZoom": True, "showAttribution": True,
+                       # The wheel scrolls the page; zoom with the +/- buttons or by dragging. A wheel-zooming map traps the
+                       # scroll whenever the pointer crosses it.
+                       "controls": {"showZoom": True, "mouseWheelZoom": False, "showAttribution": True,
                                     "showScale": False, "showMeasure": False, "showDebug": False},
                        "basemap": {"type": "carto", "name": "Basemap", "config": {"theme": "dark", "showLabels": True}},
                        "tooltip": {"mode": "details"},
@@ -311,7 +318,7 @@ def live():
                                             "SUDDEN_ACCELERATION": {"color": "orange", "index": 2},
                                             "AIS_GAP": {"color": "yellow", "index": 3}}}]
     d.add({"type": "table", "title": "Latest alerts", "datasource": KAFKA,
-           "description": "Alerts raised by the hot path, newest first.",
+           "description": "The 8 newest alerts raised by the hot path.",
            "gridPos": grid(0, 19, 16, 10), "targets": [kafka_target("vessel-alerts", 50)],
            "transformations": [
                {"id": "organize", "options": {"excludeByName": {"Time": True, "topic": True, "partition": True, "offset": True,
@@ -319,7 +326,9 @@ def live():
                                               "renameByName": {"detected_at": "Detected", "alert_type": "Alert", "severity": "Severity",
                                                                "mmsi": "MMSI", "description": "Detail", "latitude": "Lat", "longitude": "Lon"},
                                               "indexByName": {"detected_at": 0, "alert_type": 1, "severity": 2, "mmsi": 3, "description": 4}}},
-               {"id": "sortBy", "options": {"sort": [{"field": "Detected", "desc": True}]}}],
+               {"id": "sortBy", "options": {"sort": [{"field": "Detected", "desc": True}]}},
+               # Only what fits the panel: a taller table gets its own scrollbar, which competes with the page's.
+               {"id": "limit", "options": {"limitField": 8}}],
            "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": False}, "mappings": [],
                                         "thresholds": thresholds("green")},
                            "overrides": [
@@ -377,8 +386,8 @@ def spark_dashboard():
                      th_style="dashed", min_=0,
                      description="Duration of the latest micro-batch. The dashed lines mark 60% and 100% of the 30 s trigger."))
     d.add(timeseries("Headroom (processing / input)",
-                     [target("sum by (job) (%s) / sum by (job) (%s)" % (spark("processingRate_total_Value", j),
-                                                                       spark("inputRate_total_Value", j)), "{{job}}")],
+                     [target("sum by (job) (%s) / (sum by (job) (%s) > 0)" % (spark("processingRate_total_Value", j),
+                                                                            spark("inputRate_total_Value", j)), "{{job}}")],
                      12, 15, 12, 8, unit="suffix:x", th=thresholds("red", (1, "orange"), (2, "green")), th_style="dashed",
                      description="How many times faster than the input the job could go. Below 1x it is falling behind; 2x or more is comfortable."))
     d.add(timeseries("JVM heap used",
@@ -405,7 +414,7 @@ def kafka_dashboard():
                th=thresholds("green", (1, "red")), spark_line=False))
 
     d.add(timeseries("Messages per second", [target(topic_rate(ALL_TOPICS), "{{topic}}")], 0, 7, 12, 9,
-                     overrides=topic_overrides(), legend_calcs=["mean", "max"],
+                     overrides=topic_overrides(),
                      description="Write rate of every topic, over one minute."))
     d.add(timeseries("Total messages written",
                      [target('sum by (topic) (kafka_topic_partition_current_offset{topic=~"%s"})' % ALL_TOPICS, "{{topic}}")],

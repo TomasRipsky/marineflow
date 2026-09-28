@@ -37,6 +37,12 @@ class DagTest(unittest.TestCase):
         self.assertNotIn("compact_silver_partition", self.dag)
         self.assertNotIn("PythonOperator", self.dag.replace("ShortCircuitOperator", ""))
 
+    def test_staging_view_is_rebuilt_before_any_gold_model(self):
+        """dbt does not rebuild a view that is only referenced: the DAG once ran gold models against a stale
+        stg_vessel_positions (still selecting a renamed Silver column) and every one of them failed."""
+        self.assertIn('DBT_CMD.format("run --select stg_vessel_positions")', self.dag)
+        self.assertIn("check_silver >> dbt_staging >> [dbt_batch, dbt_dark, dbt_speed, dbt_loitering]", self.dag)
+
     def test_erratic_course_waits_for_the_activity_summary(self):
         self.assertIn("dbt_batch >> dbt_erratic", self.dag)
         self.assertIn("[dbt_erratic, dbt_risk] >> dbt_test", self.dag)

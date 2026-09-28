@@ -80,7 +80,7 @@ The BigQuery external tables (`marineflow_bronze.*_raw`, `marineflow_silver.*`) 
 
 ## 4. Drop the gold tables
 
-The gold models are incremental. If you leave the old tables, the first dbt run merges new rows into old ones. Dropping them makes dbt rebuild them from the empty Silver layer (the staging view `stg_vessel_positions` is a view and is kept).
+The gold models are incremental. If you leave the old tables, the first dbt run merges new rows into old ones. Dropping them makes dbt rebuild them from the empty Silver layer (the staging view `stg_vessel_positions` is kept; the DAG rebuilds it as its first dbt task).
 
 ```bash
 for t in port_traffic vessel_activity_summary vessel_dark_events vessel_erratic_course vessel_loitering vessel_risk_score vessel_speed_anomalies; do
@@ -193,7 +193,7 @@ docker exec marineflow-airflow-scheduler airflow dags unpause marineflow_pipelin
 docker exec marineflow-airflow-scheduler airflow dags trigger marineflow_pipeline
 ```
 
-Follow the run at http://localhost:4080 (`admin` / `admin`). All eight tasks should end green, `dbt_test` last. Then:
+Follow the run at http://localhost:4080 (`admin` / `admin`). All nine tasks should end green (`dbt_staging` rebuilds the staging view first), `dbt_test` last. Then:
 
 ```bash
 bq ls "$PROJECT:marineflow_gold"

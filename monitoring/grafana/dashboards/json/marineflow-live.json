@@ -371,7 +371,7 @@
         },
         "controls": {
           "showZoom": true,
-          "mouseWheelZoom": true,
+          "mouseWheelZoom": false,
           "showAttribution": true,
           "showScale": false,
           "showMeasure": false,
@@ -419,7 +419,7 @@
         "type": "hamedkarbasi93-kafka-datasource",
         "uid": "kafka"
       },
-      "description": "Alerts raised by the hot path, newest first.",
+      "description": "The 8 newest alerts raised by the hot path.",
       "gridPos": {
         "x": 0,
         "y": 19,
@@ -480,6 +480,12 @@
                 "desc": true
               }
             ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 8
           }
         }
       ],

@@ -626,7 +626,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (job) ({__name__=~\"metrics_.*_driver_spark_streaming_.*_processingRate_total_Value\", job=~\"$job\"}) / sum by (job) ({__name__=~\"metrics_.*_driver_spark_streaming_.*_inputRate_total_Value\", job=~\"$job\"})",
+          "expr": "sum by (job) ({__name__=~\"metrics_.*_driver_spark_streaming_.*_processingRate_total_Value\", job=~\"$job\"}) / (sum by (job) ({__name__=~\"metrics_.*_driver_spark_streaming_.*_inputRate_total_Value\", job=~\"$job\"}) > 0)",
           "legendFormat": "{{job}}",
           "editorMode": "code",
           "instant": false,

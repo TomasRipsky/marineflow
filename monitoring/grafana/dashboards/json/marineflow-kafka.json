@@ -483,13 +483,10 @@
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": [
-            "mean",
-            "max"
-          ]
+          "calcs": []
         },
         "tooltip": {
           "mode": "multi",
