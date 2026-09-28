@@ -53,6 +53,14 @@ class DbtModelsTest(unittest.TestCase):
                     with self.subTest(file=path.name, name=name):
                         self.assertNotIn(name, text)
 
+    def test_loitering_carries_no_always_null_port_columns(self):
+        """vessel_loitering only looks outside port zones, where Silver leaves these three null."""
+        sql = (DBT_DIR / "models/gold/vessel_loitering.sql").read_text()
+        code = "\n".join(line.split("--")[0] for line in sql.splitlines())   # ignore comments
+        for column in ("nearest_port", "eez_country", "distance_to_port_km"):
+            with self.subTest(column=column):
+                self.assertNotIn(column, code)
+
     def test_models_that_lost_columns_sync_their_schema(self):
         """dbt's incremental merge inserts the target table's columns; a column removed from the model
         would break every run until a full refresh, unless the schema is synced."""
