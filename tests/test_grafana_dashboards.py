@@ -97,8 +97,8 @@ class ScrollAndDivisionTest(unittest.TestCase):
                     self.assertLessEqual(len(p["targets"]), 2, f"{path.name}: {p['title']}")
 
     def test_ratios_guard_against_an_idle_denominator(self):
-        """An idle producer made 'Bronze rejects' render -Inf% (1 - x/0)."""
-        for name, title in [("marineflow-overview.json", "Bronze rejects"),
+        """An idle producer made 'Bronze gap' render -Inf% (1 - x/0)."""
+        for name, title in [("marineflow-overview.json", "Bronze gap"),
                             ("marineflow-spark.json", "Headroom (processing / input)")]:
             panel = next(p for p in load(GRAFANA / "dashboards/json" / name)["panels"] if p["title"] == title)
             self.assertIn("> 0)", panel["targets"][0]["expr"], title)
