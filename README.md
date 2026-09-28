@@ -1,373 +1,356 @@
 # MarineFlow
 
-**Near real-time maritime traffic intelligence pipeline**, built on live AIS data. Ingests, processes, enriches, and analyzes vessel positions at global scale, with a low-latency alerting layer running alongside the historical analytics.
+**A near-real-time maritime traffic pipeline built on the live AIS feed.** It ingests every vessel position broadcast worldwide, cleans and enriches it, archives it, and answers two different questions from the same data: *"which vessel just did something impossible?"* (seconds) and *"which vessels have looked suspicious over the last 30 days?"* (hourly analytics).
 
-Data engineering portfolio project — GCP + Kafka + Spark Structured Streaming + dbt + Airflow + Terraform. Kafka, Spark, Airflow and the observability stack run locally via Docker Compose; storage (GCS) and the warehouse (BigQuery) are real GCP services.
+[![CI](https://github.com/TomasRipsky/marineflow/actions/workflows/ci.yml/badge.svg)](https://github.com/TomasRipsky/marineflow/actions/workflows/ci.yml)
+![Kafka](https://img.shields.io/badge/Apache%20Kafka-3.7-231F20?logo=apachekafka&logoColor=white)
+![Spark](https://img.shields.io/badge/Spark-3.5%20Structured%20Streaming-E25A1C?logo=apachespark&logoColor=white)
+![dbt](https://img.shields.io/badge/dbt-BigQuery%201.8-FF694B?logo=dbt&logoColor=white)
+![Airflow](https://img.shields.io/badge/Airflow-2.8-017CEE?logo=apacheairflow&logoColor=white)
+![Terraform](https://img.shields.io/badge/Terraform-%E2%89%A51.6-7B42BC?logo=terraform&logoColor=white)
 
----
+> A personal data-engineering project to practise a realistic streaming stack end to end. Kafka, Spark, Airflow, Prometheus and Grafana run locally in Docker; storage (GCS) and the warehouse (BigQuery) are real GCP services, provisioned with Terraform.
 
-## Table of Contents
+![MarineFlow architecture](docs/img/architecture.svg)
 
-1. [Why this project exists](#why-this-project-exists)
-2. [Architecture](#architecture)
-3. [Tech Stack](#tech-stack)
-4. [Kafka Topics](#kafka-topics)
-5. [Gold Layer (dbt)](#gold-layer-dbt)
-6. [Observability](#observability)
-7. [Project Structure](#project-structure)
-8. [GCP Infrastructure (Terraform)](#gcp-infrastructure-terraform)
-9. [Setup and Running](#setup-and-running)
-10. [Design Decisions](#design-decisions)
-11. [Known Limitations](#known-limitations)
+## At a glance
 
----
+| | |
+|---|---|
+| **Streaming** | 5 Spark Structured Streaming jobs (bronze ×2, silver ×2, hot alerts) and 6 Kafka topics |
+| **Batch** | 1 dbt project: 1 staging view + 7 gold models, **104 data tests**; 1 safe compaction job |
+| **Orchestration** | 1 Airflow DAG, hourly, 8 tasks |
+| **Quality** | **71 unit tests**, 2 real-Spark smoke tests, GitHub Actions CI on every push |
+| **Infrastructure** | Terraform (3 modules wired in: IAM, GCS, BigQuery), 14 Docker Compose services |
+| **Reference data** | 65 MID codes → 35 flag states · 79 AIS ship-type codes → 11 categories · 13 navigation statuses · 15 port zones · 11 ocean boxes → 7 regions |
 
-## Why this project exists
+## Table of contents
 
-AIS (Automatic Identification System) is how ships broadcast their position, heading, and identification data in real time — public, massive, constant traffic. MarineFlow takes that raw stream and turns it into something queryable: from "where is this vessel right now?" to "which vessels have shown an anomalous movement pattern over the last 30 days?"
-
-The project is meant to demonstrate real engineering judgment, not just execution: **every piece of the stack is where it is because the problem it solves called for it**, not because it was the trendy choice. That's explained in detail in [Design Decisions](#design-decisions).
-
----
-
-## Architecture
-
-### Overview — Lambda architecture
-
-The pipeline separates two distinct needs: alerts that matter within seconds (the *hot* path) and analytics that matter in depth, not speed (the *cold* path). Both share the same data source — they aren't two separate pipelines, they're two consumers of the same Kafka.
-
-```mermaid
-flowchart TB
-    AIS["🛰️ aisstream.io<br/>WebSocket, live global AIS feed"]
-    PROD["AIS Producer<br/>Python, local process"]
-
-    AIS --> PROD
-
-    subgraph KAFKA_RAW[" "]
-        direction LR
-        TP["Kafka: vessel-positions"]
-        TM["Kafka: vessel-metadata"]
-    end
-    PROD --> TP
-    PROD --> TM
-
-    BZ["Bronze Positions<br/>Spark Structured Streaming"]
-    BM["Bronze Metadata<br/>Spark Structured Streaming"]
-    TP --> BZ
-    TM --> BM
-
-    GCSB[("GCS — bronze/<br/>Parquet, permanent raw archive")]
-    TPB["Kafka: vessel-positions-bronze"]
-    TMB["Kafka: vessel-metadata-bronze"]
-
-    BZ --> GCSB
-    BZ --> TPB
-    BM --> GCSB
-    BM --> TMB
-
-    subgraph COLD[" ❄️ COLD PATH — historical analytics "]
-        direction TB
-        SP["Silver Positions<br/>dedup + enrichment"]
-        SM["Silver Metadata<br/>normalization"]
-        GCSS[("GCS — silver/<br/>Parquet")]
-        BQ[("BigQuery External Tables<br/>bronze.* · silver.*<br/>read GCS directly, no load step")]
-        DBT["dbt (via Airflow, hourly)<br/>7 Gold models"]
-        GOLD[("BigQuery Gold<br/>native tables")]
-
-        SP --> GCSS
-        SM --> GCSS
-        GCSS --> BQ
-        GCSB --> BQ
-        BQ --> DBT
-        DBT --> GOLD
-    end
-    TPB --> SP
-    TMB --> SM
-
-    subgraph HOT[" 🔥 HOT PATH — alerts within seconds "]
-        direction TB
-        HA["Hot Alerts<br/>Spark, per-MMSI state<br/>applyInPandasWithState"]
-        TA["Kafka: vessel-alerts"]
-        HA --> TA
-    end
-    TPB --> HA
-
-    style HOT fill:#3d1f1f,stroke:#c0392b
-    style COLD fill:#1f2d3d,stroke:#2980b9
-```
-
-**How to read it**: the producer only ever writes to Kafka — it has no idea what happens next. Bronze reads each raw topic exactly once and does a *dual write* — to GCS (the permanent historical archive, never deleted) and to a `-bronze` topic in Kafka (so anyone who needs the cleaned data doesn't have to read files, they read the stream). Silver and Hot Alerts are two independent consumers of that same `-bronze` topic — neither blocks the other, neither knows the other exists.
-
-### Observability layer
-
-```mermaid
-flowchart LR
-    S1["Spark Bronze/Silver ×4<br/>PrometheusServlet :4040"]
-    KE["kafka-exporter<br/>lag per consumer group"]
-    PROM["Prometheus<br/>scrapes every 15s"]
-    GRAF["Grafana<br/>auto-provisioned dashboard"]
-
-    S1 --> PROM
-    KE --> PROM
-    PROM --> GRAF
-
-    style GRAF fill:#1f3d2e,stroke:#27ae60
-```
-
-Metrics (throughput, latency, lag) cover system health. To look at the *content* of a topic, use the Kafka console consumer (see [Setup and Running](#7-end-to-end-verification)); the Grafana Kafka datasource plugin is installed too, but no datasource or panel for it is provisioned in this repo (see [Observability](#observability)).
+1. [Overview](#1-overview)
+2. [Architecture](#2-architecture)
+3. [Data layers](#3-data-layers)
+4. [Hot path](#4-hot-path)
+5. [Gold layer and orchestration](#5-gold-layer-and-orchestration)
+6. [Getting started](#6-getting-started)
+7. [Operating the pipeline](#7-operating-the-pipeline)
+8. [Observability](#8-observability)
+9. [Infrastructure](#9-infrastructure)
+10. [Quality and CI](#10-quality-and-ci)
+11. [Engineering log](#11-engineering-log)
+12. [Design decisions](#12-design-decisions)
+13. [Project structure](#13-project-structure)
+14. [Known limitations](#14-known-limitations)
 
 ---
 
-## Tech Stack
+## 1. Overview
 
-| Layer | Technology | Why |
+AIS (Automatic Identification System) is how ships broadcast their identity, position, speed and heading. It is public, global and constant. MarineFlow turns that raw stream into something you can query, and it keeps two paths on purpose:
+
+| | Hot path | Cold path |
 |---|---|---|
-| **Ingestion** | Python + `confluent-kafka`, local process | Long-lived WebSocket with retry and backoff; publishes straight to Kafka, no middleman |
-| **Messaging** | Apache Kafka (KRaft, single broker, local Docker) | Real *push-based* streaming — without this, Spark would have to poll files, which is exactly what this project stopped doing on purpose |
-| **Processing** | Apache Spark 3.5 — Structured Streaming | Checkpointing, native Kafka connector, `foreachBatch` for the dual write |
-| **Speed layer** | Spark + `applyInPandasWithState` | Per-vessel state with timeout — the only real way to detect "this vessel just went dark" the moment it happens, not after the fact |
-| **Raw storage** | Google Cloud Storage (Parquet) | Immutable historical archive; `mode="append"` never rewrites anything, only adds |
-| **Warehouse** | BigQuery — External Tables + native tables | Bronze/Silver read GCS directly (zero load latency); Gold is native because dbt materializes it |
-| **Batch transformation** | dbt | Declarative tests, documentation, and lineage — replacing it with loose SQL in Airflow would lose all of that for no gain, see [Design Decisions](#design-decisions) |
-| **Orchestration** | Airflow (LocalExecutor) | Orchestrates dbt only — it does not orchestrate the Spark jobs, which run continuously on their own |
-| **Observability** | Prometheus + Grafana + kafka-exporter | Pipeline metrics and consumer group lag |
-| **Infrastructure** | Terraform | GCS, BigQuery, IAM — reproducible, no manual clicks in the console |
-| **Containers** | Docker Compose, custom images | Dependencies baked in at build time, not reinstalled on every startup |
+| **Question** | "Did this vessel just jump 90 nautical miles in 30 minutes?" "Did it go silent?" | "Which vessels had several blackouts and speed anomalies this month?" |
+| **Latency** | Seconds (30-second micro-batches) | Hourly |
+| **Engine** | Spark, per-vessel state | Spark → GCS → BigQuery → dbt |
+| **Output** | Kafka topic `vessel-alerts` | Gold tables in BigQuery |
+| **Depth** | Two simple rules, one global speed limit | Vessel-type limits, geospatial distance, graded severity, 30-day scoring |
+
+They are two consumers of the same Kafka topic, not two pipelines. Each has a job the other cannot do well: a per-vessel timeout fires the moment a vessel goes silent, while the analytics need the full history, joins and tests.
 
 ---
 
-## Kafka Topics
+## 2. Architecture
 
-| Topic | Producer | Consumer(s) | Content |
+The diagram above reads left to right and top to bottom. The numbered boxes are the cold path; `H1` and `H2` are the hot path.
+
+1. **aisstream.io** streams AIS messages over a WebSocket.
+2. **AIS Producer** (Python, on the host) validates them, normalises the timestamp and publishes the raw JSON to Kafka, keyed by MMSI. Retries with exponential backoff; anything that fails to publish goes to the dead-letter queue.
+3. **Kafka (raw)** holds `vessel-positions` and `vessel-metadata`.
+4. **Bronze** reads each raw topic once and writes twice: to GCS (the permanent archive) and to a `*-bronze` Kafka topic.
+5. **Kafka (bronze)**: one topic, two independent consumers. Neither knows the other exists.
+6. **Silver** deduplicates, types and enriches, then writes Parquet to GCS.
+7. **GCS data lake**: append-only Parquet; nothing downstream needs to rewrite it.
+8. **BigQuery external tables** read those files in place, with no load step and no copy.
+9. **dbt** builds the gold tables from the external tables, run hourly by **Airflow**.
+- **H1 / H2** — **Hot Alerts** consumes the same bronze topic, keeps state per vessel and writes alerts to `vessel-alerts`.
+
+### Kafka topics
+
+| Topic | Written by | Read by | Content |
 |---|---|---|---|
-| `vessel-positions` | AIS Producer | Bronze Positions | Raw PositionReport, exactly as it arrives from aisstream.io |
-| `vessel-metadata` | AIS Producer | Bronze Metadata | Raw ShipStaticData |
-| `vessel-positions-bronze` | Bronze Positions | Silver Positions, Hot Alerts | Flattened positions — same field names as the original AIS message, no business transformation |
-| `vessel-metadata-bronze` | Bronze Metadata | Silver Metadata | Flattened metadata |
-| `vessel-alerts` | Hot Alerts | *(consumed via console consumer / any client)* | JSON alerts with `alert_type` and `severity` — see below |
-| `dead-letter-queue` | AIS Producer (on error) | *(monitoring)* | Messages that failed to publish |
+| `vessel-positions` | AIS Producer | Bronze positions | Raw `PositionReport`, exactly as received |
+| `vessel-metadata` | AIS Producer | Bronze metadata | Raw `ShipStaticData` |
+| `vessel-positions-bronze` | Bronze positions | Silver positions, Hot Alerts | Flattened positions, original field names |
+| `vessel-metadata-bronze` | Bronze metadata | Silver metadata | Flattened static data |
+| `vessel-alerts` | Hot Alerts | any consumer | JSON alerts with `alert_type` and `severity` |
+| `dead-letter-queue` | AIS Producer | — | Messages that failed to publish |
 
-Every message is **keyed by MMSI** — guarantees everything about a given vessel lands on the same partition, preserving per-vessel ordering downstream. Topics are created explicitly by the `kafka-init-topics` service (3 partitions, except the DLQ with 1); broker auto-create is disabled.
+Every message is keyed by MMSI, so all messages of one vessel land in the same partition and keep their order. Topics have 3 partitions (the dead-letter queue has 1) and are created by the `kafka-init-topics` service; broker auto-create is off.
 
-### Hot path alerts (`vessel-alerts`)
+---
+
+## 3. Data layers
+
+![Data layers](docs/img/medallion.svg)
+
+### Bronze — the raw, replayable archive
+
+Bronze does no business logic. It parses the JSON against a fixed schema, keeps the aisstream.io field names (`MMSI`, `Latitude`, `Sog`…), and rejects only what cannot be real (missing MMSI, latitude outside ±90, longitude outside ±180, or the AIS "not available" markers 91/181). It adds lineage (`_batch_id`, `_pipeline_version`, `ingestion_timestamp`) and partitions by date and hour. Every micro-batch is written to GCS and published to Kafka from the same DataFrame.
+
+### Silver — clean, typed, enriched
+
+| Step | What it does |
+|---|---|
+| **Rename** | Raw names → `snake_case` semantic names |
+| **Deduplicate** | One row per `(mmsi, event_timestamp)` inside each micro-batch |
+| **"Not available" values** | The AIS markers for *unknown* become `null`: SOG 102.3 kn, COG 360°, heading 511 |
+| **Flag state** | From the MMSI's first three digits (MID): 65 codes → 35 countries, one shared table (`reference_data.py`) |
+| **Ship type** | 79 AIS codes → `cargo`, `tanker`, `passenger`, `fishing`, `tug`, `special_craft`, `sailing_or_pleasure`, `high_speed_craft`, `wing_in_ground`, `other`, `unknown` |
+| **Navigation status** | 13 codes → labels such as `at_anchor`, `moored`, `under_way_engine` (reserved codes become `unknown_<n>`) |
+| **Geography** | 11 bounding boxes → 7 ocean regions (first match wins); 15 major-port zones → `nearest_port`, `is_in_port_zone` |
+| **Movement** | Speed and heading change against the vessel's previous message |
+
+These lookups are deliberately coarse; see [Known limitations](#14-known-limitations).
+
+### Gold — analytics with dbt
+
+See [section 5](#5-gold-layer-and-orchestration).
+
+### Reference tables that must stay consistent
+
+The same category or code appears in several layers. Tests keep them from drifting apart:
+
+- every ship category Silver can emit has a speed limit in dbt and is accepted by a dbt test;
+- flags come from a single table used by both Silver jobs;
+- the BigQuery external tables in Terraform list exactly the columns the jobs write;
+- the labels Silver writes for `at_anchor` / `moored` are the ones the loitering model filters on.
+
+---
+
+## 4. Hot path
+
+`hot_alerts.py` reads `vessel-positions-bronze` and writes `vessel-alerts` (Kafka to Kafka: no GCS, no BigQuery). It uses `applyInPandasWithState`, keyed by MMSI, with the last position, speed and time of each vessel as state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Tracking: first position of a vessel
+    Tracking --> Tracking: new position, compare with the last one, update state and reset the timeout
+    Tracking --> Silent: no message for 120 minutes
+    Silent --> [*]: AIS_GAP alert, state removed
+```
 
 | `alert_type` | Severity | Rule |
 |---|---|---|
-| `GPS_SPOOFING` | high | Speed calculated from consecutive positions > 35 kn **and** reported SOG changed by > 5 kn |
-| `IMPOSSIBLE_SPEED` | high | Calculated speed > 35 kn |
-| `SUDDEN_ACCELERATION` | medium | Reported SOG changed by > 10 kn between consecutive messages |
-| `AIS_GAP` | medium | No message from the vessel for 120 minutes (fires when the per-vessel timeout expires, not on reappearance) |
+| `GPS_SPOOFING` | high | Speed computed from consecutive positions > 35 kn **and** reported SOG changed by more than 5 kn |
+| `IMPOSSIBLE_SPEED` | high | Computed speed > 35 kn |
+| `SUDDEN_ACCELERATION` | medium | Reported SOG changed by more than 10 kn |
+| `AIS_GAP` | medium | No message for 120 minutes; fires when the timeout expires, not when the vessel reappears |
 
-The hot path uses one global speed limit (35 kn); the vessel-type-specific limits live in dbt. A reported SOG of 102.3 kn (the AIS "not available" value) is ignored here, and Silver turns it into null (as it does with COG 360° and heading 511), so it never counts as a speed change.
+Details that matter:
+
+- A reported SOG of 102.3 kn (the AIS *not available* value) is ignored. An unknown SOG counts as *no evidence* of a speed change, so it can never create a false acceleration, and an impossible jump with unknown SOG is `IMPOSSIBLE_SPEED`, not spoofing.
+- The hot path uses **one** global limit (35 kn). The per-type limits live in dbt, where the vessel type is one join away.
+- The job needs `pandas` and `pyarrow` inside the Spark image. The image runs Python 3.8, which caps the versions, so `requirements.txt` pins `pandas 1.5.3`, `pyarrow 12.0.1` and `numpy 1.24.4`.
+- State is checkpointed in a Docker volume, not in GCS.
 
 ---
 
-## Gold Layer (dbt)
+## 5. Gold layer and orchestration
 
-| Model | Materialization | Grain | What it answers |
+### Lineage
+
+```mermaid
+flowchart LR
+    s1[("silver.vessel_positions_clean")] --> stg["stg_vessel_positions<br/>view"]
+    s2[("silver.vessel_metadata")] --> stg
+    stg --> act["vessel_activity_summary"]
+    stg --> port["port_traffic"]
+    stg --> dark["vessel_dark_events"]
+    stg --> speed["vessel_speed_anomalies"]
+    stg --> loit["vessel_loitering"]
+    stg --> risk["vessel_risk_score"]
+    act --> erratic["vessel_erratic_course"]
+    dark --> risk
+    speed --> risk
+    loit --> risk
+```
+
+`stg_vessel_positions` joins each position with the latest static data of the vessel and drops invalid coordinates and MMSIs that start with `0` (coast stations and group calls, not vessels). It is the single entry point for every gold model.
+
+### Models
+
+| Model | Type | Grain | What it answers |
 |---|---|---|---|
-| `stg_vessel_positions` | view (Silver dataset) | position | Staging — joins Silver positions with the latest Silver metadata per MMSI (vessel type, destination, IMO, draught) and drops invalid coordinates and MMSIs starting with `0`. Single entry point for every Gold model |
-| `vessel_activity_summary` | table | (mmsi, day) | Daily activity: distance, positions in port vs at sea, speed profile, sudden speed changes, sharp turns (heading change > 45°), AIS gaps > 30 / > 120 min |
-| `port_traffic` | table | (port, day) | Unique vessels, vessel-type breakdown (distinct vessels per category; the columns sum to `unique_vessels`), port entries, speed profile inside the port zone |
-| `vessel_erratic_course` | table | (mmsi, day) | Vessels with more than 10 sharp turns in a day and average speed above 1 kn (rules out vessels swinging at anchor); severity `medium` above 10 turns, `high` above 20. Built on `vessel_activity_summary` |
-| `vessel_dark_events` | incremental (merge) | event | Every AIS gap over 120 minutes, with real geospatial displacement (`ST_DISTANCE`). Severity: `CRITICAL` (> 720 min and > 100 km), `HIGH` (> 360 min and > 50 km), `MEDIUM`. Includes a port-change flag (`crossed_eez_during_gap`) — the rich, contextual version of what Hot Alerts detects instantly |
-| `vessel_speed_anomalies` | incremental (merge) | event | Calculated (great-circle) speed vs. reported speed, against vessel-type-specific limits (cargo 25 kn, tanker 18, fishing 15, passenger 30, tug 14, high-speed craft 50, wing-in-ground 100, other/unknown 35, …); every category Silver can emit has a limit. Types: `GPS_SPOOFING`, `IMPOSSIBLE_SPEED`, `SUDDEN_ACCELERATION` |
-| `vessel_loitering` | incremental (merge) | session | Vessels moving slowly (0.1–4 kn) for more than 180 minutes inside the same 0.1° cell, outside port zones, graded by `risk_level` |
-| `vessel_risk_score` | incremental (merge) | (mmsi, score day) | Daily snapshot of a weighted score over the trailing 30 days, aggregating `vessel_dark_events` + `vessel_speed_anomalies` + `vessel_loitering` |
+| `vessel_activity_summary` | table | (mmsi, day) | Distance, positions in port vs at sea, speed profile, sudden speed changes, sharp turns (> 45°), AIS gaps over 30 / 120 min |
+| `port_traffic` | table | (port, day) | Distinct vessels per port and per type (the type columns sum to `unique_vessels`), port entries, speed inside the port zone |
+| `vessel_erratic_course` | table | (mmsi, day) | More than 10 sharp turns in a day at over 1 kn; `medium` above 10, `high` above 20 |
+| `vessel_dark_events` | incremental (merge) | gap | AIS silences over 120 minutes with geospatial displacement. `CRITICAL` > 720 min and > 100 km, `HIGH` > 360 min and > 50 km, otherwise `MEDIUM` |
+| `vessel_speed_anomalies` | incremental (merge) | event | Great-circle speed against **per-type limits**; types `GPS_SPOOFING`, `IMPOSSIBLE_SPEED`, `SUDDEN_ACCELERATION` |
+| `vessel_loitering` | incremental (merge) | session | Moving slowly (0.1–4 kn) outside port zones for over 180 minutes in the same 0.1° cell; `risk_level` `HIGH` / `MEDIUM` / `LOW` |
+| `vessel_risk_score` | incremental (merge) | (mmsi, day) | Daily snapshot of a weighted 30-day score |
 
-Data-quality tests live in `models/gold/schema.yml` (`dbt_utils.expression_is_true`, uniqueness of grain and surrogate keys, accepted values).
+Speed limits used by `vessel_speed_anomalies` (knots):
 
-### Orchestration (Airflow)
+| cargo | tanker | fishing | passenger | tug | special craft | sailing / pleasure | high-speed craft | wing-in-ground | other / unknown |
+|---|---|---|---|---|---|---|---|---|---|
+| 25 | 18 | 15 | 30 | 14 | 20 | 20 | 50 | 100 | 35 |
 
-The `marineflow_pipeline` DAG runs hourly at minute 5:
+Risk score = 10 × dark-event severity points + 8 × dark events that end in a different port zone + 15 × spoofing signals + 5 × speed anomalies + 3 × loitering sessions, over the trailing 30 days.
 
-1. `check_silver_data_arrived` — short-circuits the run if no Silver file in GCS was updated in the last 2 hours (e.g. the Spark jobs are stopped).
-2. `dbt_batch_models` (`vessel_activity_summary`, `port_traffic`), `dbt_dark_events`, `dbt_speed_anomalies` and `dbt_loitering` — in parallel.
-3. `dbt_erratic_course` — after `dbt_batch_models`, because it reads `vessel_activity_summary`.
-4. `dbt_risk_score` — after the three detection models.
-5. `dbt_test` — after `dbt_erratic_course` and `dbt_risk_score`.
+The four incremental models use `merge` with an MD5 surrogate key. `vessel_loitering` and `vessel_risk_score` set `on_schema_change='sync_all_columns'`, because dbt's merge inserts the target table's columns and would otherwise fail after a column is removed.
 
-Compacting the small Silver files is **not** part of this DAG: see [Silver compaction](#9-silver-compaction-manual).
+### The DAG
 
-dbt runs inside the scheduler container (`dbt-bigquery` baked into `orchestration/Dockerfile`) with `--target prod`.
+`marineflow_pipeline` runs at minute 5 of every hour (`5 * * * *`), with 2 retries and exponential backoff. It only orchestrates dbt: the Spark jobs run continuously on their own and are not batch jobs.
 
----
-
-## Observability
-
-- **Grafana dashboard** (auto-provisioned): Input Rate, Processing Rate and Batch Latency per Spark job, Job Up, and Kafka Consumer Lag.
-- **Prometheus**: scrapes the driver of each of the four GCS-writing Spark jobs (`:4040/metrics/prometheus/`, served by the `PrometheusServlet` sink in `processing/spark-conf/metrics.properties`) and `kafka-exporter` (`:9308`). The Input/Processing Rate and Latency panels only have data if the job is started with `--conf spark.sql.streaming.metricsEnabled=true` (included in the commands below).
-- **Hot Alerts is not scraped** — there is no Prometheus target for `spark-hot-alerts`; watch its output on the `vessel-alerts` topic.
-- **Kafka datasource plugin** (`hamedkarbasi93-kafka-datasource`): installed in the Grafana container, but no datasource or panel using it is provisioned in the repo. Add one by hand in the Grafana UI if you want to browse live topic content.
-
----
-
-## Project Structure
-
-```
-marineflow/
-├── ingestion/
-│   └── ais_producer/            # WebSocket producer → Kafka
-│       ├── main.py              # Retry with backoff, graceful shutdown
-│       ├── producer.py          # KafkaPublisher (confluent-kafka), keyed by mmsi, DLQ on error
-│       ├── parser.py            # Validates, normalizes timestamp, routes by MessageType
-│       ├── config.py
-│       └── test_connection.py   # Manual websocket connectivity check
-│
-├── processing/
-│   ├── Dockerfile               # Spark image shared by all 5 jobs
-│   ├── jars/                    # GCS connector, BigQuery connector
-│   ├── spark-conf/
-│   │   ├── metrics.properties   # Prometheus sink, auto-loaded by Spark
-│   │   └── log4j2.properties
-│   └── spark_streaming/
-│       ├── bronze_positions.py  # Kafka raw → GCS + Kafka bronze
-│       ├── bronze_metadata.py   # Kafka raw → GCS + Kafka bronze
-│       ├── silver_positions.py  # Kafka bronze → GCS Silver (dedup, enrichment)
-│       ├── silver_metadata.py   # Kafka bronze → GCS Silver (normalization)
-│       ├── hot_alerts.py        # Kafka bronze → Kafka alerts (stateful, no GCS)
-│       ├── compact_silver.py    # Safe compaction of a closed day's small Silver files (manual)
-│       ├── reference_data.py    # Shared lookups (flag MIDs) used by both Silver jobs
-│       └── diagnose_bronze.py   # Diagnostics helper
-│
-├── transformation/dbt/
-│   ├── macros/                  # generate_schema_name, safe_divide
-│   └── models/
-│       ├── staging/             # stg_vessel_positions + sources.yml
-│       └── gold/                # 7 analytical models + schema.yml tests
-│
-├── orchestration/
-│   ├── Dockerfile               # Airflow + dbt-bigquery image
-│   └── dags/marineflow_pipeline.py
-│
-├── infra/terraform/
-│   ├── main.tf
-│   ├── terraform.tfvars         # project_id, service_account_email (gitignored)
-│   └── modules/
-│       ├── gcs/                 # Data lake bucket (lifecycle) + Terraform state bucket
-│       ├── bigquery/            # Datasets + Bronze/Silver External Tables + Gold dataset
-│       ├── iam/                 # Roles for the service account
-│       └── compute/             # Producer VM definition — NOT wired into main.tf
-│
-├── monitoring/
-│   ├── prometheus/prometheus.yml
-│   └── grafana/                 # Datasource + dashboard, auto-provisioned
-│
-├── tests/                       # Unit tests (mappings, hot path, wiring) + smoke/ (real Spark)
-├── .github/workflows/ci.yml     # Compile + tests + dbt parse
-├── docker-compose.yml
-├── .env.example
-├── requirements-dev.txt
-└── .gitignore
+```mermaid
+flowchart LR
+    check["check_silver_data_arrived<br/>short-circuits if no Silver file<br/>was updated in the last 2 h"] --> batch["dbt_batch_models<br/>activity_summary, port_traffic"]
+    check --> dark["dbt_dark_events"]
+    check --> speed["dbt_speed_anomalies"]
+    check --> loit["dbt_loitering"]
+    batch --> erratic["dbt_erratic_course"]
+    dark --> risk["dbt_risk_score"]
+    speed --> risk
+    loit --> risk
+    erratic --> test["dbt_test"]
+    risk --> test
 ```
 
+dbt runs inside the scheduler container (`dbt-bigquery 1.8.2` is baked into `orchestration/Dockerfile`) with `--target prod`. Compaction of small Silver files is **not** part of the DAG; see [Silver compaction](#silver-compaction).
+
 ---
 
-## GCP Infrastructure (Terraform)
+## 6. Getting started
 
-Terraform manages three modules from the root (`iam`, `gcs`, `bigquery`):
+**Prerequisites:** Docker with Compose v2, Python 3.11, the `gcloud` CLI, Terraform ≥ 1.6, a GCP project and a free [aisstream.io](https://aisstream.io) API key.
 
-- **GCS**: the data lake bucket `<gcs_bucket_name>-<project_id>` (e.g. `marineflow-lake-<project>`) — single source of truth for the raw historical record (bronze/silver). Lifecycle rules move data to Nearline at 30 days and Coldline at 90. The module also declares the `marineflow-tfstate` bucket used as the Terraform backend.
-- **BigQuery**:
-  - `marineflow_bronze` — External Tables `vessel_positions_raw`, `vessel_metadata_raw`
-  - `marineflow_silver` — External Tables `vessel_positions_clean`, `vessel_metadata`
-  - `marineflow_gold` — empty dataset, dbt materializes native tables inside it
-- **IAM**: binds the service account to `storage.objectAdmin`, `bigquery.dataEditor`, `bigquery.jobUser`, `logging.logWriter` and `monitoring.metricWriter`.
+### 1. Environment
 
-`modules/compute` (an e2-micro VM running the producer under systemd, API key from Secret Manager) exists in the repo but is **not instantiated** in `main.tf`: the producer and Kafka run locally today.
+```bash
+python3.11 -m venv venv && source venv/bin/activate
+cp .env.example .env            # fill in AIS_API_KEY, GCP_PROJECT_ID, GCS_BUCKET, ADC_PATH
+gcloud auth application-default login
+```
+
+`GCS_BUCKET` is the **full** bucket name, `<gcs_bucket_name>-<project_id>` (for example `marineflow-lake-my-project`).
+
+### 2. Infrastructure (once)
+
+```bash
+# the Terraform state bucket must exist before `terraform init`
+gcloud storage buckets create gs://marineflow-tfstate
+# the service account is created outside Terraform, which only manages its role bindings
+gcloud iam service-accounts create marineflow-sa --project <project-id>
+```
+
+Create `infra/terraform/terraform.tfvars` (it is git-ignored) with your project and the service account email; everything else has a default:
+
+```hcl
+project_id            = "<project-id>"
+service_account_email = "marineflow-sa@<project-id>.iam.gserviceaccount.com"
+```
 
 ```bash
 cd infra/terraform
 terraform init
-terraform plan    # review before applying
+# the state bucket is also declared in the gcs module: adopt it before the first apply
+terraform import module.gcs.google_storage_bucket.tfstate marineflow-tfstate
+terraform plan        # review before applying
 terraform apply
 ```
 
----
-
-## Setup and Running
-
-### 1. Initial environment
-
-```bash
-python3.11 -m venv venv      # pydantic-core has no prebuilt wheel for very new Python versions — pin 3.11
-source venv/bin/activate
-cp .env.example .env         # fill in AIS_API_KEY, GCP_PROJECT_ID, GCS_BUCKET and ADC_PATH
-gcloud auth application-default login
-```
-
-### 2. Kafka + topics
+### 3. Start the stack
 
 ```bash
 docker compose up kafka kafka-init-topics -d --build
-```
-
-### 3. Spark, Airflow, and observability stack
-
-```bash
 docker compose up spark-bronze spark-bronze-metadata spark-silver-positions spark-silver-metadata spark-hot-alerts -d --build
 docker compose up postgres airflow-init airflow-webserver airflow-scheduler -d --build
 docker compose up kafka-exporter prometheus grafana -d --build
 ```
 
-The Spark containers only run `sleep infinity`; the jobs are started by hand in step 5. All five share one image (`marineflow-spark:3.5.0`, Python 3.8) whose `requirements.txt` pins pandas, pyarrow and numpy — Hot Alerts needs them for `applyInPandasWithState`. After changing that file, rebuild with `--build` and recreate the Spark containers.
+The Spark containers only run `sleep infinity`: the jobs are started by hand in the next step. All five share one image (`marineflow-spark:3.5.0`); rebuild it with `--build` and recreate the containers whenever `processing/spark_streaming/requirements.txt` changes.
 
-### 4. The producer
+### 4. Start the jobs (one terminal each, `-it` so Ctrl+C stops them cleanly)
+
+| Job | Container | Script | GCS jars |
+|---|---|---|---|
+| Bronze positions | `marineflow-spark-bronze` | `bronze_positions.py` | yes |
+| Bronze metadata | `marineflow-spark-bronze-metadata` | `bronze_metadata.py` | yes |
+| Silver positions | `marineflow-spark-silver-positions` | `silver_positions.py` | yes |
+| Silver metadata | `marineflow-spark-silver-metadata` | `silver_metadata.py` | yes |
+| Hot Alerts | `marineflow-spark-hot-alerts` | `hot_alerts.py` | no |
+
+```bash
+# GCS-writing jobs: swap the container and the script name
+docker exec -it marineflow-spark-bronze /opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.ui.prometheus.enabled=true --conf spark.sql.streaming.metricsEnabled=true --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/bronze_positions.py
+```
+
+```bash
+# Hot Alerts: Kafka to Kafka, no GCS jars
+docker exec -it marineflow-spark-hot-alerts /opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 /opt/spark/processing/spark_streaming/hot_alerts.py
+```
+
+`--conf spark.sql.streaming.metricsEnabled=true` is what makes the Grafana rate and latency panels show data.
+
+### 5. Start the producer
 
 ```bash
 cd ingestion/ais_producer && python main.py
 ```
 
-### 5. Launch the Spark jobs (one terminal each, `-it` so Ctrl+C works properly)
-
-```bash
-# Bronze Positions
-docker exec -it marineflow-spark-bronze /opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.ui.prometheus.enabled=true --conf spark.sql.streaming.metricsEnabled=true --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/bronze_positions.py
-
-# Bronze Metadata — same command, script bronze_metadata.py, container marineflow-spark-bronze-metadata
-# Silver Positions — same command, script silver_positions.py, container marineflow-spark-silver-positions
-# Silver Metadata — same command, script silver_metadata.py, container marineflow-spark-silver-metadata
-
-# Hot Alerts — no GCS jars needed, pure Kafka-to-Kafka
-docker exec -it marineflow-spark-hot-alerts /opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 /opt/spark/processing/spark_streaming/hot_alerts.py
-```
-
-Micro-batch size is tunable per job through `BRONZE_MAX_OFFSETS_PER_TRIGGER`, `BRONZE_METADATA_MAX_OFFSETS_PER_TRIGGER`, `SILVER_MAX_OFFSETS_PER_TRIGGER` and `METADATA_MAX_OFFSETS_PER_TRIGGER` (default 1000 offsets per 30-second trigger). `docker compose` passes them from `.env` into the containers; recreate a container (`docker compose up <service> -d`) for a change to apply.
-
-### 6. dbt
-
-```bash
-cd transformation/dbt && dbt deps && dbt run && dbt test
-```
-
-Airflow runs the same models every hour; run them by hand only for development (see the note on `dev`/`prod` targets in [Known Limitations](#known-limitations)).
-
-### 7. End-to-end verification
+### 6. Check it works
 
 ```bash
 docker exec marineflow-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic vessel-positions-bronze --from-beginning --max-messages 5
 docker exec marineflow-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic vessel-alerts --from-beginning --max-messages 5
-
 bq query --use_legacy_sql=false 'SELECT COUNT(*) FROM `<project>.marineflow_silver.vessel_positions_clean`'
-bq query --use_legacy_sql=false 'SELECT severity, COUNT(*) FROM `<project>.marineflow_gold.vessel_erratic_course` GROUP BY 1'
 ```
 
-### 8. Tests and CI
+### Ports
 
-```bash
-pip install -r requirements-dev.txt
-python -m pytest -q          # or, with no install: python -m unittest discover -s tests
-```
+| Service | Port | URL |
+|---|---|---|
+| Kafka | 9092 | `localhost:9092` from the host, `kafka:29092` inside Docker |
+| Spark UI (bronze positions) | 4040 | http://localhost:4040 |
+| Airflow | 4080 | http://localhost:4080 (`admin` / `admin`, local only) |
+| PostgreSQL (Airflow backend) | 5434 | `localhost:5434` |
+| kafka-exporter | 9308 | http://localhost:9308/metrics |
+| Prometheus | 9090 | http://localhost:9090 |
+| Grafana | 3000 | http://localhost:3000 (`admin` / `GRAFANA_ADMIN_PASSWORD`) |
 
-The tests never import the Spark jobs (they call `load_dotenv()` and need PySpark); constants and pure functions are extracted from the source. They cover the reference mappings across layers (Silver ↔ dbt), the AIS "not available" values and the hot path logic, and the wiring between files (the DAG runs every gold model, Docker Compose passes the variables the jobs read).
+---
 
-`tests/smoke/hot_alerts_smoke.py` runs the hot path on real Spark inside the project's Spark image (the Docker command is in its docstring). Fakes cannot catch everything: it is what showed that Spark hands the per-vessel state back as a tuple.
+## 7. Operating the pipeline
 
-GitHub Actions (`.github/workflows/ci.yml`) compiles the sources, runs the tests and runs `dbt parse` (dbt-bigquery 1.8.2, no credentials needed) on every push to any branch (and can be started by hand from the Actions tab); the checks also show up on pull requests.
+### Configuration
 
-### 9. Silver compaction (manual)
+Everything is read from `.env` (see `.env.example`); Docker Compose passes what the containers need.
 
-The Silver jobs write one small Parquet file per 30-second micro-batch, which slows down the BigQuery external tables. `compact_silver.py` merges the files of a **closed** day (yesterday by default; today is refused) into a few large ones, for both Silver datasets. Run it in the Spark image; the container needs your ADC credentials and the bucket, and no stack has to be running:
+| Variable | Used by | Default | Notes |
+|---|---|---|---|
+| `AIS_API_KEY` | producer | — | required, never commit it |
+| `GCP_PROJECT_ID`, `GCS_BUCKET` | Spark, Airflow | — | `GCS_BUCKET` is the full bucket name |
+| `ADC_PATH` | containers | `~/.config/gcloud/application_default_credentials.json` | mounted read-only as the credentials |
+| `KAFKA_BOOTSTRAP_SERVERS` | producer | `localhost:9092` | Spark containers get `kafka:29092` from Compose |
+| `KAFKA_TOPIC_POSITIONS` / `_METADATA` / `_DLQ` | producer, jobs | see `.env.example` | |
+| `BRONZE_MAX_OFFSETS_PER_TRIGGER`, `BRONZE_METADATA_…`, `SILVER_…`, `METADATA_…` | Spark | `1000` | Kafka offsets read per 30-second micro-batch |
+| `KAFKA_STARTING_OFFSETS` | Spark | `earliest` | only applies on the first run, before a checkpoint exists |
+| `PIPELINE_VERSION` | Bronze | `0.1.0` | stored in the lineage columns |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana | `marineflow_dev` | |
+
+### Reset from scratch
+
+Deleting topics without deleting checkpoints (or the other way round) leaves offsets inconsistent, so do both. Stop the four GCS-writing jobs and Hot Alerts, then:
+
+1. delete the six Kafka topics and recreate them with `docker compose up kafka-init-topics -d --build`;
+2. delete `bronze/`, `silver/` and `checkpoints/` in the bucket;
+3. remove the Hot Alerts checkpoint volume (`docker volume rm marineflow_hot-alerts-checkpoint`; check the exact name with `docker volume ls`, it starts with your project folder name);
+4. start the jobs again, then the producer.
+
+### Silver compaction
+
+Silver writes one small Parquet file per 30-second micro-batch, which slows BigQuery down over time. `compact_silver.py` merges the files of a **closed** day (yesterday by default; today is refused) for both Silver datasets. It runs by hand in the Spark image and needs no running stack:
 
 ```bash
 docker run --rm --entrypoint /bin/sh \
@@ -377,82 +360,175 @@ docker run --rm --entrypoint /bin/sh \
   marineflow-spark:3.5.0 -c "/opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/compact_silver.py --dry-run"
 ```
 
-Drop `--dry-run` to apply it; add `--date YYYY-MM-DD` for another day or `--dataset vessel_positions` for one dataset. It is safe by construction: it snapshots the files, writes and verifies the compacted output outside the table prefix, and only then swaps it in. Files that arrive late are never touched, a run that is interrupted is finished by the next one, and any failure exits non-zero. The previous in-DAG compaction overwrote the path it was reading and deleted the partition.
+Always start with `--dry-run`, which writes and verifies the result and then discards it. Drop the flag to apply it; add `--date YYYY-MM-DD` for another day or `--dataset vessel_positions` for one dataset.
 
-### Local ports
+```mermaid
+sequenceDiagram
+    participant You as You (docker run)
+    participant Job as compact_silver.py
+    participant Part as Silver partition (GCS)
+    participant Stage as Staging (outside the table prefix)
+    You->>Job: --date D (closed days only)
+    Job->>Job: finish any interrupted run
+    Job->>Part: snapshot the data files
+    Job->>Stage: read the snapshot, write compacted files
+    Job->>Stage: verify schema and row count
+    alt verification fails
+        Job-->>You: error, partition untouched
+    else verified
+        Job->>Stage: write manifest (moves and originals)
+        Job->>Part: move compacted files in
+        Job->>Part: delete the snapshot files
+        Job->>Stage: remove staging
+    end
+```
 
-| Service | Port | URL |
+Why it is built this way: object stores have no atomic rename, and the previous in-DAG version read a partition and overwrote it, which deleted the data. Files that arrive late are never read, moved or deleted; an interrupted run is finished by the next one; and any failure exits non-zero instead of being swallowed.
+
+---
+
+## 8. Observability
+
+- **Prometheus** scrapes the driver of the four GCS-writing Spark jobs (`:4040/metrics/prometheus`, served by the `PrometheusServlet` sink in `processing/spark-conf/metrics.properties`) and `kafka-exporter`.
+- **Grafana** provisions its Prometheus datasource and one dashboard automatically: *Input Rate*, *Processing Rate*, *Batch Latency*, *Job Up* and *Kafka Consumer Lag*.
+- The rate and latency series only exist for jobs started with `--conf spark.sql.streaming.metricsEnabled=true`.
+- **Hot Alerts has no Prometheus target**; watch its output on `vessel-alerts`.
+- The Grafana Kafka datasource plugin is installed, but no datasource or panel using it is provisioned in this repository.
+
+---
+
+## 9. Infrastructure
+
+Terraform manages GCS, BigQuery and IAM. The remote state lives in GCS.
+
+| Module | Wired in `main.tf` | What it creates |
 |---|---|---|
-| Kafka | 9092 | `localhost:9092` (host) / `kafka:29092` (Docker internal network) |
-| Spark UI (Bronze Positions) | 4040 | http://localhost:4040 |
-| Airflow | 4080 | http://localhost:4080 (admin/admin) |
-| PostgreSQL | 5434 | `localhost:5434` |
-| kafka-exporter | 9308 | http://localhost:9308/metrics |
-| Prometheus | 9090 | http://localhost:9090 |
-| Grafana | 3000 | http://localhost:3000 (admin / `GRAFANA_ADMIN_PASSWORD`) |
+| `iam` | yes | Role bindings for the service account: `storage.objectAdmin`, `bigquery.dataEditor`, `bigquery.jobUser`, plus `logging.logWriter` and `monitoring.metricWriter` (unused today) |
+| `gcs` | yes | Data lake bucket `<gcs_bucket_name>-<project_id>` with lifecycle rules (Nearline after 30 days, Coldline after 90) and the versioned state bucket |
+| `bigquery` | yes | Datasets `marineflow_bronze`, `marineflow_silver`, `marineflow_gold`; four **external tables** over the Parquet files, with Hive partitioning |
+| `compute` | **no** | An e2-micro VM that would run the producer under systemd. It is not wired into `main.tf`: the producer and Kafka run locally, and a VM would also need a Kafka broker it can reach |
+
+Today the jobs run with **your own credentials** (Application Default Credentials mounted into the containers, and dbt's `oauth` method); the service account's bindings exist but nothing authenticates as it yet.
 
 ---
 
-## Design Decisions
+## 10. Quality and CI
 
-### Kafka as the native transport, not files as the transport
+```mermaid
+flowchart LR
+    change["Change"] --> unit["71 unit tests<br/>no Spark, no GCP"]
+    unit --> smoke["2 Spark smoke tests<br/>real Spark and Parquet, in the project image"]
+    smoke --> ci["GitHub Actions<br/>compile, tests, dbt parse"]
+    ci --> main["main"]
+    main --> dbt["dbt run and 104 data tests<br/>in BigQuery, hourly"]
+```
 
-Spark has a native Kafka connector (*push-based*, no polling). Using Kafka as the bridge between layers — not just as the entry point — means Silver and Hot Alerts receive data the moment Bronze publishes it, not whenever Spark gets around to checking for new files in a directory. GCS remains the permanent historical archive (that's why Bronze writes to both), but **nothing downstream depends on reading GCS to make progress**.
+| Layer | What it checks | Where it runs |
+|---|---|---|
+| **Unit tests** (`tests/`) | Reference mappings across layers; AIS "not available" handling; hot path logic including timeouts; compaction commit and crash recovery; that the DAG runs every gold model; that Compose passes the variables the jobs read; that Terraform external tables match what the jobs write | Local, CI |
+| **Smoke tests** (`tests/smoke/`) | The hot path on real Spark (pinned pandas/pyarrow, Python 3.8); the compaction on real Parquet: normal run, late file, crash and recovery, dry run, size-based split | Local, in the Spark image |
+| **dbt parse** | The project compiles with `dbt-bigquery 1.8.2`, without credentials | CI |
+| **dbt data tests** | 104 tests on the gold models and the Silver sources | After each hourly run |
 
-### Lambda architecture — not everything needs to be streaming
+CI (`.github/workflows/ci.yml`) runs on every push to any branch and can be started by hand from the Actions tab. It has two jobs: *Python tests* (byte-compile, then the unit tests on Python 3.11 with the same pandas and numpy as the Spark image) and *dbt parse*.
 
-Not every question benefits from low latency. "How many sharp turns did this vessel make today?" is, by definition, a question that only makes sense answered over the full day — turning it into stateful streaming doesn't make it better, only more complex to build and operate. "Did this vessel just go dark?" does need seconds, not an hour. The hot path (`hot_alerts.py`) exists solely for the two questions where latency genuinely matters; everything else lives in dbt, with tests and lineage a hand-rolled streaming job doesn't give you for free.
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q            # or, with no install: python -m unittest discover -s tests
+```
 
-### BigQuery External Tables, not batch loading
-
-Bronze and Silver are External Tables reading Parquet straight from GCS — there's no "load" step between GCS and BigQuery. That removes an entire hop of latency and operational complexity. Only Gold is native, because that's where dbt decides to materialize.
-
-### Everything local, no cloud infrastructure where it isn't needed
-
-The producer runs as a local process and Kafka as a local container — no GCP VM holds any of this up. For a pipeline that today lives entirely on a development machine, keeping cloud compute running with no real use is complexity and cost the project doesn't need at this stage. `infra/terraform/modules/compute` keeps the VM + systemd pattern ready, but it would also need a Kafka broker reachable from that VM, so it stays unwired until the producer or Kafka need to live off the laptop.
-
----
-
-## Known Limitations
-
-### Spark in local mode
-
-Each job runs `local[2]` inside its own container, and the jobs are started manually. In a real production setting: Dataproc or GKE with proper cluster sizing, and a supervisor that restarts the jobs.
-
-### Small file accumulation in GCS
-
-`coalesce(1)` limits file count per micro-batch, but files still accumulate over time. Silver can be compacted with `compact_silver.py` (step 9), but nothing runs it automatically, and Bronze is never compacted. A scheduled Dataproc job, or Delta Lake, would handle this in a production scenario.
-
-### Silver deduplication and movement deltas are per micro-batch
-
-`silver_positions.py` deduplicates by `(mmsi, event_timestamp)` and computes `speed_change_rate` / `heading_change_degrees` with window functions **inside each `foreachBatch`**. The first position of every vessel in each batch therefore has null deltas, and duplicates that land in different batches are not removed.
-
-### dbt `dev` and `prod` share the same dataset
-
-Both targets in `transformation/dbt/profiles.yml` point to the same project and dataset (`marineflow_gold`); only `threads` and `priority` differ. A local `dbt run` overwrites what the Airflow DAG produced.
-
-### Silver reference lookups are coarse
-
-- `flag_country` comes from a partial MID table (`processing/spark_streaming/reference_data.py`, about 35 countries, shared by both Silver jobs); any other flag is null.
-- `ocean_region` uses bounding boxes where the first match wins. The Black Sea, the Sea of Marmara and the Pacific/Caribbean sides of Central America are not modelled properly.
-- `nearest_port`, `eez_country` and `distance_to_port_km` only exist inside a 0.3–0.5° box around 15 major ports, and `eez_country` is that port's country, not a real EEZ.
-
-### No ship-to-ship (STS) transfer detection
-
-`vessel_loitering` used to carry a `potential_sts_transfer` flag ("offshore, long, turning"). It could never be true, because `distance_to_port_km` is null outside the 15 port boxes, and it was removed. A meaningful version needs a real port catalogue (for example the World Port Index) loaded as a dbt seed and a BigQuery geospatial join to get the distance to the nearest port for every loitering session; the 15-port list in Silver is far too small to say "far from any port".
-
-### aisstream.io is BETA
-
-No guaranteed SLA. Retry with exponential backoff absorbs transient disconnections (the producer exits after 10 failed attempts).
-
-### Hot Alerts: a single speed limit, not per vessel type, and no metrics
-
-Unlike `vessel_speed_anomalies.sql` (dbt), which uses vessel-type-specific limits, the hot path uses a single global threshold (35 knots) — avoids a join against the metadata stream that would have doubled the state complexity. dbt remains the source of truth for precise classification; Hot Alerts is, by design, a simpler early-warning signal. It also has no Prometheus scrape target.
-
-### Local development credentials
-
-`docker-compose.yml` contains dev-only defaults (Airflow Fernet key, database password, Airflow `admin/admin`). They are meant for a local machine and must not be reused anywhere else.
+The tests never import the Spark jobs (they call `load_dotenv()` and need PySpark): constants and pure functions are extracted from the source. The smoke tests are the exception by design, because fakes hide real-Spark behaviour. Run them from the repository root; the exact `docker run` command is in each file's docstring.
 
 ---
 
-*Stack: Python · Apache Kafka · Apache Spark · GCS · BigQuery · dbt · Airflow · Terraform · Prometheus · Grafana*
+## 11. Engineering log
+
+Testing found real problems. These are the ones worth remembering, and how each was found.
+
+| Problem | Found by | Fix |
+|---|---|---|
+| The compaction in the DAG read a partition and overwrote the same path: **6 files / 600 rows became 0 / 0**, while a catch-all `except` reported a warning | Reproducing it in the Spark image | Removed; replaced by `compact_silver.py` |
+| Hot Alerts could not start: the Spark image (Python 3.8) has no pandas or pyarrow | Inspecting the image | Pinned in `requirements.txt` |
+| Hot Alerts crashed on the second position of any vessel: Spark returns the state as a tuple, the code read attributes | The real-Spark smoke test (a fake had hidden it) | `VesselState` namedtuple |
+| `vessel_erratic_course` had tests but the DAG never built it | Coherence test | Added to the DAG |
+| The batch-size variables were read by the code but never reached the containers | Compose wiring test | Passed through Compose |
+| Ocean regions gave Barcelona as *atlantic* and New York as *Pacific* (list order inverted the priority, and one box ended at 70°W) | Checking the 15 major ports | First match wins, boxes added |
+| Five flag states were wrong in the MID table, which existed twice | Checking against the ITU table | One shared, corrected table |
+| Loitering compared `at anchor` while Silver writes `at_anchor`, and `NOT IN` dropped null statuses | Reading both layers together | Exact labels, nulls kept |
+| SOG 102.3 and COG 360 were treated as real values, producing false acceleration alerts | Hot path test | Turned into null |
+| A "possible ship-to-ship transfer" flag could never be true | Tracing where its inputs come from | Removed, and documented |
+| A Terraform column the job never wrote; a connection test that disabled TLS verification | Schema alignment test; code review | Removed; test now mirrors the producer |
+
+---
+
+## 12. Design decisions
+
+- **Kafka between layers, not files.** Spark's Kafka source is push-based, so Silver and Hot Alerts receive data as Bronze publishes it. GCS stays the permanent archive, but nothing downstream needs to read it to make progress.
+- **Two paths, because latency has a cost.** "How many sharp turns today?" only makes sense over a whole day; making it streaming adds complexity and no value. "Did this vessel just go silent?" needs seconds. Only the second lives in the hot path.
+- **BigQuery external tables instead of loading.** Bronze and Silver are read in place from GCS, which removes a hop. Only gold is native, because dbt materialises it.
+- **Bronze never transforms.** Field names and values stay as received, so any downstream mistake can be replayed.
+- **Coherence over cleverness.** Lookups that appear in more than one place live in one place, and tests fail when the layers disagree.
+- **Errors are raised, not swallowed.** The compaction, the diagnostics and the CLI exit non-zero and say why.
+- **Local by default.** Kafka, Spark and Airflow run in Docker; only storage and the warehouse are cloud. A VM would add cost and no learning for a project that lives on one laptop.
+
+---
+
+## 13. Project structure
+
+```text
+marineflow/
+├── ingestion/ais_producer/        # WebSocket → Kafka: main, parser, producer, config, test_connection
+├── processing/
+│   ├── Dockerfile                 # Spark image shared by the 5 streaming services
+│   ├── jars/                      # GCS and BigQuery connectors
+│   ├── spark-conf/                # metrics.properties (Prometheus sink), log4j2.properties
+│   └── spark_streaming/
+│       ├── bronze_positions.py    # Kafka raw → GCS + Kafka bronze
+│       ├── bronze_metadata.py
+│       ├── silver_positions.py    # dedup, enrichment, GCS Silver
+│       ├── silver_metadata.py
+│       ├── hot_alerts.py          # stateful alerts, Kafka to Kafka
+│       ├── compact_silver.py      # safe compaction of a closed day (manual)
+│       ├── reference_data.py      # flag table shared by both Silver jobs
+│       ├── diagnose_bronze.py     # null counts and a sample of Bronze
+│       └── requirements.txt       # pins pandas, pyarrow, numpy for Python 3.8
+├── transformation/dbt/            # staging view, 7 gold models, schema tests, macros
+├── orchestration/
+│   ├── Dockerfile                 # Airflow + dbt-bigquery 1.8.2
+│   └── dags/marineflow_pipeline.py
+├── infra/terraform/               # modules: iam, gcs, bigquery (applied), compute (not wired)
+├── monitoring/                    # Prometheus config, Grafana provisioning and dashboard
+├── tests/                         # unit tests and smoke/ (real Spark)
+├── docs/img/                      # the diagrams in this README
+├── .github/workflows/ci.yml       # compile, tests, dbt parse
+├── docker-compose.yml             # 14 services
+├── .env.example
+└── requirements-dev.txt
+```
+
+---
+
+## 14. Known limitations
+
+- **Spark runs in local mode**, one container per job, started by hand. Production would use Dataproc or GKE and a supervisor that restarts jobs.
+- **Silver deduplication and movement deltas work per micro-batch.** The first position of a vessel in each batch has null speed and heading change, and a duplicate that lands in another batch is not removed.
+- **The reference lookups are coarse on purpose.** Flags come from 65 MIDs (35 countries); other vessels have a null flag. Ocean regions are bounding boxes: the Black Sea, the Sea of Marmara and the two sides of Central America are not modelled. `nearest_port`, `eez_country` and `distance_to_port_km` only exist inside 0.3–0.5° boxes around 15 ports, `eez_country` is that port's country and not a real exclusive economic zone, and the distance uses 111 km per degree without a latitude correction. `crossed_eez_during_gap` is therefore a proxy: it needs both ends of the gap to be inside port zones.
+- **There is no ship-to-ship (STS) transfer detection.** An earlier flag could never be true and was removed. A real version needs a port catalogue (for example the World Port Index) loaded as a dbt seed and a BigQuery geospatial join; 15 ports are far too few to say "far from any port".
+- **Small files pile up** until you run the compaction, which is manual. Bronze is never compacted.
+- **The hot path has one speed limit** (35 kn) and no Prometheus target.
+- **aisstream.io is in beta**, with no SLA. The producer retries with backoff and exits after 10 failed attempts.
+- **dbt `dev` and `prod` share a dataset.** Both targets point at `marineflow_gold`, so a local `dbt run` overwrites what Airflow produced. There is no separate development environment.
+- **Local credentials only.** Compose contains development defaults (Airflow's Fernet key and admin login, the database password) that must not be reused anywhere else.
+
+### What is verified, and what is not
+
+| Verified | Not exercised recently |
+|---|---|
+| Unit tests locally and in CI; `dbt parse` with the same dbt version as Airflow in CI | The whole stack running end to end on the live feed |
+| Hot path and compaction on real Spark 3.5 in the project image | `dbt run` against BigQuery after the latest model changes |
+| The DAG imports in the Airflow image with the expected task graph | The compaction against the real bucket (run it with `--dry-run` first) |
+| `terraform validate` | `terraform apply` of the latest external-table change (a column that was always null was removed from the Silver `vessel_metadata` table) |
+
+---
+
+*Stack: Python · Apache Kafka · Apache Spark · Google Cloud Storage · BigQuery · dbt · Airflow · Terraform · Prometheus · Grafana · GitHub Actions*
