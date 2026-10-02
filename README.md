@@ -22,7 +22,7 @@
 | **Streaming** | 5 Spark Structured Streaming jobs (bronze ×2, silver ×2, hot alerts) and 6 Kafka topics |
 | **Batch** | 1 dbt project: 1 staging view + 7 gold models, **104 data tests**; 1 safe compaction job |
 | **Orchestration** | 1 Airflow DAG, hourly, 9 tasks |
-| **Quality** | **100 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
+| **Quality** | **101 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
 | **Infrastructure** | Terraform (3 modules wired in: IAM, GCS, BigQuery), 14 Docker Compose services |
 | **Reference data** | 65 MID codes → 35 flag states · 79 AIS ship-type codes → 11 categories · 13 navigation statuses · 15 port zones · 11 ocean boxes → 7 regions |
 
@@ -346,10 +346,29 @@ Everything is read from `.env` (see `.env.example`); Docker Compose passes what 
 | `ADC_PATH` | containers | `~/.config/gcloud/application_default_credentials.json` | mounted read-only as the credentials |
 | `KAFKA_BOOTSTRAP_SERVERS` | producer | `localhost:9092` | Spark containers get `kafka:29092` from Compose |
 | `KAFKA_TOPIC_POSITIONS` / `_METADATA` / `_DLQ` | producer, jobs | see `.env.example` | |
-| `BRONZE_MAX_OFFSETS_PER_TRIGGER`, `BRONZE_METADATA_…`, `SILVER_…`, `METADATA_…` | Spark | `1000` | Kafka offsets read per 30-second micro-batch |
+| `BRONZE_MAX_OFFSETS_PER_TRIGGER`, `BRONZE_METADATA_…`, `SILVER_…`, `METADATA_…` | Spark | `4000` | Kafka offsets read per 30-second micro-batch (cap = value / 30 per second; see below) |
 | `KAFKA_STARTING_OFFSETS` | Spark | `earliest` | only applies on the first run, before a checkpoint exists |
 | `PIPELINE_VERSION` | Bronze | `0.1.0` | stored in the lineage columns |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana | `marineflow_dev` | |
+
+### Sizing the micro-batch
+
+Each Spark job reads at most `*_MAX_OFFSETS_PER_TRIGGER` Kafka offsets per 30-second trigger, so its ceiling is **value / 30 messages per second**. If that ceiling is below the rate at which the producer writes, the job does not fail: it simply falls further behind every minute, and everything downstream (Silver, BigQuery, the Hot Alerts, which read the Bronze topic) gets older.
+
+This happened in the first long run. The live feed delivered about 95 messages/s; with the old default of 1000 (33/s) Bronze wrote exactly 33.3/s, the raw topic was 85,000 messages ahead of the Bronze one, and the newest event in BigQuery was 15 minutes old. The default is now 4000 (133/s).
+
+How to tell whether a cap is too low:
+
+- Messages per second on `vessel-positions` and `vessel-positions-bronze` in the *Kafka* dashboard: the second should follow the first. A flat line at `value / 30` is the cap.
+- The *Bronze gap* tile on the *Overview* dashboard stays high while *Spark jobs up* is 4/4.
+- *Headroom* in the *Spark streaming* dashboard (processing rate over input rate): near or below 1x means the job is also limited by its processing speed, and raising the cap will not help.
+
+To change it, edit `.env`, recreate the two containers (a plain restart does not re-read the environment) and start the jobs again; they resume from their checkpoints and work off the backlog:
+
+```bash
+docker compose up -d spark-bronze spark-silver-positions
+scripts/jobs.sh start bronze silver-positions
+```
 
 ### Reset from scratch
 
@@ -439,7 +458,7 @@ Today the jobs run with **your own credentials** (Application Default Credential
 
 ```mermaid
 flowchart LR
-    change["Change"] --> unit["100 unit tests<br/>no Spark, no GCP"]
+    change["Change"] --> unit["101 unit tests<br/>no Spark, no GCP"]
     unit --> smoke["3 Spark smoke tests<br/>real Spark and Parquet, in the project image"]
     smoke --> ci["GitHub Actions<br/>compile, tests, dbt parse"]
     ci --> main["main"]

@@ -89,7 +89,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TOPIC_POSITIONS=${KAFKA_TOPIC_POSITIONS:-vessel-positions}
       - KAFKA_TOPIC_POSITIONS_BRONZE=${KAFKA_TOPIC_POSITIONS_BRONZE:-vessel-positions-bronze}
-      - BRONZE_MAX_OFFSETS_PER_TRIGGER=${BRONZE_MAX_OFFSETS_PER_TRIGGER:-1000}
+      - BRONZE_MAX_OFFSETS_PER_TRIGGER=${BRONZE_MAX_OFFSETS_PER_TRIGGER:-4000}
     ports:
       - "4040:4040"
     volumes:
@@ -123,7 +123,7 @@ services:
       - SPARK_MASTER=local[2]
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TOPIC_POSITIONS_BRONZE=${KAFKA_TOPIC_POSITIONS_BRONZE:-vessel-positions-bronze}
-      - SILVER_MAX_OFFSETS_PER_TRIGGER=${SILVER_MAX_OFFSETS_PER_TRIGGER:-1000}
+      - SILVER_MAX_OFFSETS_PER_TRIGGER=${SILVER_MAX_OFFSETS_PER_TRIGGER:-4000}
     volumes:
       - ./processing:/opt/spark/processing
       - ./processing/spark-conf/metrics.properties:/opt/spark/conf/metrics.properties:ro
@@ -155,7 +155,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TOPIC_METADATA=${KAFKA_TOPIC_METADATA:-vessel-metadata}
       - KAFKA_TOPIC_METADATA_BRONZE=${KAFKA_TOPIC_METADATA_BRONZE:-vessel-metadata-bronze}
-      - BRONZE_METADATA_MAX_OFFSETS_PER_TRIGGER=${BRONZE_METADATA_MAX_OFFSETS_PER_TRIGGER:-1000}
+      - BRONZE_METADATA_MAX_OFFSETS_PER_TRIGGER=${BRONZE_METADATA_MAX_OFFSETS_PER_TRIGGER:-4000}
     volumes:
       - ./processing:/opt/spark/processing
       - ./processing/spark-conf/metrics.properties:/opt/spark/conf/metrics.properties:ro
@@ -186,7 +186,7 @@ services:
       - SPARK_MASTER=local[2]
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TOPIC_METADATA_BRONZE=${KAFKA_TOPIC_METADATA_BRONZE:-vessel-metadata-bronze}
-      - METADATA_MAX_OFFSETS_PER_TRIGGER=${METADATA_MAX_OFFSETS_PER_TRIGGER:-1000}
+      - METADATA_MAX_OFFSETS_PER_TRIGGER=${METADATA_MAX_OFFSETS_PER_TRIGGER:-4000}
     volumes:
       - ./processing:/opt/spark/processing
       - ./processing/spark-conf/metrics.properties:/opt/spark/conf/metrics.properties:ro

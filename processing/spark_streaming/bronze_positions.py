@@ -78,7 +78,7 @@ BRONZE_OUTPUT_DIR = f"gs://{GCS_BUCKET}/bronze/vessel_positions"
 # uses another offset format and crashes the job if reused.
 CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/bronze_positions_kafka"
 
-MAX_OFFSETS_PER_TRIGGER = int(os.getenv("BRONZE_MAX_OFFSETS_PER_TRIGGER", "1000"))
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("BRONZE_MAX_OFFSETS_PER_TRIGGER", "4000"))
 
 
 # =============================================================================

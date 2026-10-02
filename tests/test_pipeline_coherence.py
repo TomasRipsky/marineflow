@@ -106,6 +106,21 @@ class ComposeWiringTest(unittest.TestCase):
                 with self.subTest(var=name):
                     self.assertRegex(ENV_EXAMPLE, rf"(?m)^{name}=", msg="missing from .env.example")
 
+    def test_batch_size_defaults_agree_in_code_compose_and_env_example(self):
+        """The cap is value / 30 messages per second: 1000 (33/s) fell behind a ~95/s feed, so the default must be one number."""
+        compose_text = (ROOT / "docker-compose.yml").read_text()
+        defaults = {}
+        for job in SPARK_DIR.glob("*.py"):
+            for name, value in re.findall(r'os\.getenv\("([A-Z_]*MAX_OFFSETS_PER_TRIGGER)", "(\d+)"\)', job.read_text()):
+                defaults[name] = int(value)
+        self.assertGreaterEqual(len(defaults), 4)
+        for name, in_code in defaults.items():
+            with self.subTest(var=name):
+                in_compose = int(re.search(rf"{name}=\$\{{{name}:-(\d+)\}}", compose_text).group(1))
+                in_env_example = int(re.search(rf"(?m)^{name}=(\d+)", ENV_EXAMPLE).group(1))
+                self.assertEqual((in_code, in_compose, in_env_example), (in_code,) * 3)
+                self.assertGreaterEqual(in_code // 30, 100, "below the ~95 messages/s the live feed delivers")
+
     def test_variables_without_default_are_documented_in_env_example(self):
         compose_text = (ROOT / "docker-compose.yml").read_text()
         required = set(re.findall(r"\$\{([A-Z_]+)\}", compose_text))

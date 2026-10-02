@@ -53,7 +53,7 @@ KAFKA_STARTING_OFFSETS = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
 BRONZE_OUTPUT_DIR = f"gs://{GCS_BUCKET}/bronze/vessel_metadata"
 CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/bronze_metadata"
 
-MAX_OFFSETS_PER_TRIGGER = int(os.getenv("BRONZE_METADATA_MAX_OFFSETS_PER_TRIGGER", "1000"))
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("BRONZE_METADATA_MAX_OFFSETS_PER_TRIGGER", "4000"))
 
 
 def get_landing_schema():
