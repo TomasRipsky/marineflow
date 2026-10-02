@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MarineFlow — live ship traffic, end to end</title>
+<meta name="description" content="A near-real-time data pipeline on the live AIS feed: Kafka, Spark Structured Streaming, dbt, Airflow and Grafana, with a hot path for seconds-old alerts and a cold path for 30-day risk.">
+<meta name="theme-color" content="#030d1a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23030d1a'/%3E%3Cpath d='M16 5l4 11-4 3-4-3z' fill='%2338d4ff'/%3E%3Cpath d='M6 22c3 3 7 3 10 0s7-3 10 0' stroke='%2338d4ff' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="top" id="top">
+  <a class="brand" href="#top" aria-label="MarineFlow, back to top">
+    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><path d="M16 4l4.5 12L16 19.5 11.5 16z" fill="currentColor"/><path d="M5 23c3.3 3.3 7.3 3.3 11 0s7.7-3.3 11 0" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg>
+    MarineFlow
+  </a>
+  <nav aria-label="Sections">
+    <a href="#questions">Two questions</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#results">Results</a>
+    <a href="#case">Case file</a>
+    <a href="#decisions">Decisions</a>
+    <a href="#quality">Quality</a>
+    <a href="#dashboards">Dashboards</a>
+    <a class="gh" href="https://github.com/TomasRipsky/marineflow">GitHub ↗</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="radar" aria-hidden="true">
+    <svg viewBox="-200 -200 400 400">
+      <g fill="none" stroke="currentColor" stroke-width="1">
+        <circle r="60"/><circle r="110"/><circle r="160"/><circle r="195" stroke-dasharray="2 6"/>
+        <path d="M-195 0H195M0-195V195" stroke-dasharray="1 5"/>
+      </g>
+      <g class="rose" fill="currentColor"><path d="M0-150L8-8 0 0-8-8z"/><path d="M0 150L5 8 0 0-5 8z" opacity=".35"/><path d="M-150 0L-8-5 0 0-8 5z" opacity=".35"/><path d="M150 0L8 5 0 0 8-5z" opacity=".35"/></g>
+      <text x="0" y="-168" text-anchor="middle" font-size="14" fill="currentColor">N</text>
+    </svg>
+    <div class="sweep"></div>
+  </div>
+  <div class="hero-copy">
+    <p class="eyebrow">A data-engineering project on the live AIS feed</p>
+    <h1>Which vessel just did something <em>impossible</em>?<br>And which ones have looked <em>suspicious</em> all month?</h1>
+    <p class="lede">MarineFlow ingests every ship position broadcast worldwide and answers both questions from the same stream: one in seconds, the other once an hour.</p>
+    <div class="stats" id="hero-stats" aria-live="polite"></div>
+    <p class="snapshot" id="snapshot-note"></p>
+  </div>
+</section>
+
+<section id="questions" class="band">
+  <div class="wrap">
+    <h2>One stream, two speeds</h2>
+    <div class="two">
+      <article class="card hot">
+        <span class="tag">Hot path · seconds</span>
+        <h3>“Is this ship doing something impossible, right now?”</h3>
+        <p>A Spark job keeps per-vessel state and compares every position with the previous one. A ship that appears to travel faster than 35 knots, accelerates absurdly, or goes silent for two hours raises an alert on <code>vessel-alerts</code> — Kafka to Kafka, with no warehouse in the way.</p>
+        <ul class="facts"><li>Stateful: <code>applyInPandasWithState</code></li><li>Tolerates AIS “not available” sentinels</li><li>State survives restarts (checkpoint volume)</li></ul>
+      </article>
+      <article class="card cold">
+        <span class="tag">Cold path · hourly</span>
+        <h3>“Which vessels looked suspicious over 30 days?”</h3>
+        <p>The same positions are archived as Parquet in Google Cloud Storage, read through BigQuery external tables, and modelled by dbt into seven gold tables: dark events, speed anomalies, loitering, erratic course, activity, port traffic and a 30-day risk score. Airflow runs it every hour.</p>
+        <ul class="facts"><li>Bronze → Silver → Gold (medallion)</li><li>Incremental merges with surrogate keys</li><li><span data-fact="dbt_tests">104</span> dbt data tests after each run</li></ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="architecture" class="wrap">
+  <h2>Architecture</h2>
+  <p class="sub">Everything runs locally in Docker Compose except storage and the warehouse, which are real Google Cloud services provisioned with Terraform.</p>
+  <figure class="paper"><img src="assets/img/architecture.svg" alt="Architecture diagram: producer, Kafka, hot path and cold path, GCS, BigQuery, dbt, Airflow, monitoring" loading="lazy"></figure>
+  <div class="counters">
+    <div><b data-fact="services">14</b><span>Docker services</span></div>
+    <div><b data-fact="topics">6</b><span>Kafka topics</span></div>
+    <div><b>5</b><span>Spark streaming jobs</span></div>
+    <div><b data-fact="gold_models">7</b><span>gold models</span></div>
+    <div><b data-fact="dag_tasks">9</b><span>Airflow tasks</span></div>
+  </div>
+  <h3 class="mt">The medallion layers</h3>
+  <figure class="paper"><img src="assets/img/medallion.svg" alt="Bronze, silver and gold layers and what each one adds" loading="lazy"></figure>
+</section>
+
+<section id="results" class="band">
+  <div class="wrap">
+    <h2>What the pipeline produced</h2>
+    <p class="sub">Real numbers, read from the project's BigQuery tables by <code>site/tools/refresh_data.py</code>. Vessels are shown without names and with the MMSI masked.</p>
+
+    <div class="grid2">
+      <div class="panel wide">
+        <h3>Traffic density <small>2° cells, Silver positions</small></h3>
+        <canvas id="map" width="1440" height="560" role="img" aria-label="Heat map of ship positions around the world"></canvas>
+        <p class="note">No coastline is drawn: the ships draw it. In this snapshot the brightest cell is the Dutch coast around Rotterdam, followed by the German Bight, Puget Sound, the Gulf of Athens and the US Gulf coast.</p>
+      </div>
+
+      <div class="panel">
+        <h3>Ingestion <small>positions per minute</small></h3>
+        <div id="timeline" class="bars v"></div>
+        <p class="note">Two bursts, not a continuous run: on this laptop the Spark jobs were killed more than once by the Docker VM running out of memory. See <a href="#limits">limits</a>.</p>
+      </div>
+
+      <div class="panel">
+        <h3>Distinct vessels by flag <small>top 10, from the MMSI country code</small></h3>
+        <div id="flags" class="bars h"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Vessel types <small>gold activity summary</small></h3>
+        <div id="types" class="bars h"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Where the ships were <small>positions by ocean region</small></h3>
+        <div id="regions" class="bars h"></div>
+      </div>
+
+      <div class="panel wide">
+        <h3>Port traffic <small>gold, one day, inside the 15 monitored port zones</small></h3>
+        <div class="tablewrap"><table id="ports"></table></div>
+      </div>
+
+      <div class="panel wide">
+        <h3>Risk score <small>30-day window, top of the table</small></h3>
+        <div class="tablewrap"><table id="risk"></table></div>
+        <p class="note">A pipeline output, not an accusation. With a few minutes of data, the score is dominated by the speed-anomaly detector, which is exactly why the next section matters.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="case" class="wrap">
+  <h2>Case file: one identifier, two oceans</h2>
+  <p class="sub">The single fastest “impossible speed” the pipeline flagged. Names are left out on purpose.</p>
+  <div class="case">
+    <div class="casemap"><svg id="casemap" viewBox="0 0 600 320" role="img" aria-label="Two positions of the same identifier, one in California and one in Florida, seconds apart"></svg></div>
+    <div class="casetext" id="casetext"></div>
+  </div>
+</section>
+
+<section id="decisions" class="band">
+  <div class="wrap">
+    <h2>Design decisions worth explaining</h2>
+    <div class="three">
+      <article class="card">
+        <h3>A compaction that cannot lose data</h3>
+        <p>The first version read a Silver partition and overwrote the same path. Measured in the Spark image: <b>6 files and 600 rows became 0 and 0</b>, while a catch-all <code>except</code> reported a warning. It was removed.</p>
+        <p>The replacement snapshots the partition, stages the result outside the table prefix, verifies it, commits through a manifest, and rolls forward after a crash. Late files are never read or deleted.</p>
+      </article>
+      <article class="card">
+        <h3>Tests that check the seams</h3>
+        <p>Most bugs here were not inside a layer but between two. So the tests compare layers: Terraform external-table schemas against what the Spark jobs write, the DAG against the dbt models, Compose against the variables the code reads, and the README's numbers against the repository.</p>
+        <p>The smoke tests run on real Spark, because a fake had hidden a crash that only real Spark produced.</p>
+      </article>
+      <article class="card">
+        <h3>Dashboards as code</h3>
+        <p>The four Grafana dashboards are generated by one stdlib-only Python script and committed as JSON. A unit test fails if the JSON drifts from the generator, if a panel points at a datasource that is not provisioned, or if a cluster-wide query leaks Kafka's internal <code>__consumer_offsets</code> topic.</p>
+      </article>
+    </div>
+
+    <h3 class="mt">Bugs found while building it</h3>
+    <div class="tablewrap">
+      <table class="log">
+        <thead><tr><th>Problem</th><th>How it was found</th><th>Fix</th></tr></thead>
+        <tbody>
+          <tr><td>Five gold models failed at once with <code>Name nearest_port not found</code></td><td>The first end-to-end run. dbt never rebuilds a view that is only referenced, so a renamed Silver column left a stale staging view</td><td>A <code>dbt_staging</code> task before every model</td></tr>
+          <tr><td>A tile called “Bronze rejects” showed 56–80%</td><td>Sampling 3,000 raw messages: none failed validation. Docker showed the Bronze job <code>OOMKilled</code></td><td>Renamed to “Bronze gap”; described as a lag symptom</td></tr>
+          <tr><td>Hot Alerts crashed on the second position of any vessel</td><td>The real-Spark smoke test; Spark hands state over as a tuple, which a fake had hidden</td><td>A <code>namedtuple</code></td></tr>
+          <tr><td>Barcelona came out as Atlantic and New York as Pacific</td><td>Checking the 15 major ports by hand</td><td>First match wins, boxes corrected</td></tr>
+          <tr><td>A “speed 102.3 kn” sentinel produced false acceleration alerts</td><td>Hot path test</td><td>AIS “not available” values become null</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="quality" class="wrap">
+  <h2>Quality</h2>
+  <div class="counters big">
+    <div><b data-fact="unit_tests">93</b><span>unit tests</span></div>
+    <div><b data-fact="smoke_tests">3</b><span>Spark smoke tests</span></div>
+    <div><b data-fact="dbt_tests">104</b><span>dbt data tests</span></div>
+    <div><b>CI</b><span>on every push</span></div>
+  </div>
+  <div class="two">
+    <div class="card">
+      <h3>Verified</h3>
+      <ul class="check yes">
+        <li>Unit tests locally and in GitHub Actions</li>
+        <li>Hot path and compaction on real Spark 3.5 in the project image</li>
+        <li><code>dbt parse</code> with the same dbt version as Airflow</li>
+        <li>The DAG imports with the expected task graph</li>
+        <li>The full pipeline ran end to end: all seven gold tables exist and the dashboards read live Kafka and Prometheus data</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Not verified yet</h3>
+      <ul class="check no">
+        <li>A long, uninterrupted run: the local Spark jobs died under memory pressure</li>
+        <li>The compaction against the real bucket (<code>--dry-run</code> first)</li>
+        <li>Detectors with a window long enough to fill dark events, loitering and erratic course; they are empty after a few minutes</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="dashboards" class="band">
+  <div class="wrap">
+    <h2>Dashboards</h2>
+    <p class="sub">Four Grafana dashboards, generated from code. Screenshots appear here as soon as the file exists in <code>site/assets/shots/</code>.</p>
+    <div class="gallery" id="gallery"></div>
+  </div>
+</section>
+
+<section id="limits" class="wrap">
+  <h2>Limits, stated plainly</h2>
+  <ul class="limits">
+    <li><b>Spark runs in local mode</b>, one container per job, started by hand. Nothing restarts a job that dies, and on a small Docker VM the kernel can kill one silently. Production would use Dataproc or GKE.</li>
+    <li><b>The reference lookups are coarse.</b> Flags come from 65 MID codes (35 countries); ports are 15 bounding boxes; ocean regions are boxes too.</li>
+    <li><b>No ship-to-ship transfer detection.</b> An earlier flag could never be true and was removed instead of kept as decoration.</li>
+    <li><b>Silver deduplicates and computes deltas per micro-batch</b>, not across batches.</li>
+    <li><b>aisstream.io is in beta</b>, with no SLA.</li>
+  </ul>
+</section>
+
+<section class="band run">
+  <div class="wrap">
+    <h2>Run it yourself</h2>
+    <p class="sub">There is a runbook that wipes everything and starts from zero, with a check for every layer.</p>
+    <pre><code>git clone https://github.com/TomasRipsky/marineflow
+cd marineflow
+python -m unittest discover -s tests     # no Docker, no cloud
+# then follow FRESH_START.md</code></pre>
+    <p><a class="btn" href="https://github.com/TomasRipsky/marineflow">View the repository</a> <a class="btn ghost" href="https://github.com/TomasRipsky/marineflow/blob/main/FRESH_START.md">Fresh-start runbook</a></p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Python · Apache Kafka · Spark Structured Streaming · GCS · BigQuery · dbt · Airflow · Terraform · Prometheus · Grafana</span>
+    <span id="footer-note"></span>
+  </div>
+</footer>
+
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
