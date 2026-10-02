@@ -149,10 +149,11 @@
   /* gallery: real screenshots when the file exists, an honest placeholder when not */
   (function gallery() {
     var shots = [
-      ["overview", "Overview", "Health tiles, throughput per topic, Spark input vs processing, service availability."],
-      ["live-traffic", "Live traffic", "Positions and alerts read straight from Kafka."],
-      ["spark", "Spark streaming", "Rates, batch latency against the 30 s trigger, headroom, JVM heap."],
-      ["airflow", "Airflow DAG", "The nine-task hourly run: staging view, models in parallel, tests."]
+      ["overview", "Overview", "Health tiles, throughput per topic, Spark input vs processing, service availability.", "gallery"],
+      ["live-traffic", "Live traffic", "Vessel density and the latest alerts, read straight from Kafka.", "gallery"],
+      ["spark", "Spark streaming", "Rates, batch latency against the 30 s trigger, headroom, JVM heap.", "gallery"],
+      ["kafka", "Kafka", "Topics and partitions, messages per second, retained messages, partition balance and a topic inventory.", "gallery"],
+      ["airflow", "Airflow DAG", "The nine-task hourly run: staging view, models in parallel, tests.", "dag-shot"]
     ];
     shots.forEach(function (s) {
       var fig = el("figure", "shot"), cap = el("figcaption", "", "<b>" + s[1] + "</b> — " + s[2]);
@@ -162,7 +163,7 @@
       img.onload = function () { fig.replaceChild(img, pending); };
       img.src = "assets/shots/" + s[0] + ".png";
       fig.appendChild(pending); fig.appendChild(cap);
-      $("gallery").appendChild(fig);
+      $(s[3]).appendChild(fig);
     });
   })();
 

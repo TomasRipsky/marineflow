@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MarineFlow — live ship traffic, end to end</title>
-<meta name="description" content="A near-real-time data pipeline on the live AIS feed: Kafka, Spark Structured Streaming, dbt, Airflow and Grafana, with a hot path for seconds-old alerts and a cold path for 30-day risk.">
+<title>MarineFlow — real-time ship monitoring and analytics</title>
+<meta name="description" content="A real-time monitoring layer for ships, with an analytics layer on top, built on the live AIS feed: Kafka, Spark Structured Streaming, Grafana, dbt, Airflow and BigQuery.">
 <meta name="theme-color" content="#030d1a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23030d1a'/%3E%3Cpath d='M16 5l4 11-4 3-4-3z' fill='%2338d4ff'/%3E%3Cpath d='M6 22c3 3 7 3 10 0s7-3 10 0' stroke='%2338d4ff' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
@@ -17,13 +17,12 @@
     MarineFlow
   </a>
   <nav aria-label="Sections">
-    <a href="#questions">Two questions</a>
+    <a href="#layers">Two layers</a>
+    <a href="#monitoring">Monitoring</a>
     <a href="#architecture">Architecture</a>
-    <a href="#results">Results</a>
-    <a href="#case">Case file</a>
+    <a href="#results">Analytics</a>
     <a href="#decisions">Decisions</a>
     <a href="#quality">Quality</a>
-    <a href="#dashboards">Dashboards</a>
     <a class="gh" href="https://github.com/TomasRipsky/marineflow">GitHub ↗</a>
   </nav>
 </header>
@@ -43,32 +42,39 @@
     <div class="sweep"></div>
   </div>
   <div class="hero-copy">
-    <p class="eyebrow">A data-engineering project on the live AIS feed</p>
-    <h1>Which vessel just did something <em>impossible</em>?<br>And which ones have looked <em>suspicious</em> all month?</h1>
-    <p class="lede">MarineFlow ingests every ship position broadcast worldwide and answers both questions from the same stream: one in seconds, the other once an hour.</p>
+    <p class="eyebrow">Real-time monitoring · analytics · live AIS feed</p>
+    <h1>Watch the world's ships <em>in real time</em>. Understand them <em>over time</em>.</h1>
+    <p class="lede">MarineFlow ingests every ship position broadcast worldwide. A monitoring layer shows traffic, alerts and the health of the pipeline itself within seconds; an analytics layer turns the same stream into hourly vessel activity, port traffic and a 30-day risk score.</p>
     <div class="stats" id="hero-stats" aria-live="polite"></div>
     <p class="snapshot" id="snapshot-note"></p>
   </div>
 </section>
 
-<section id="questions" class="band">
+<section id="layers" class="band">
   <div class="wrap">
-    <h2>One stream, two speeds</h2>
+    <h2>One stream, two layers</h2>
     <div class="two">
       <article class="card hot">
-        <span class="tag">Hot path · seconds</span>
-        <h3>“Is this ship doing something impossible, right now?”</h3>
-        <p>A Spark job keeps per-vessel state and compares every position with the previous one. A ship that appears to travel faster than 35 knots, accelerates absurdly, or goes silent for two hours raises an alert on <code>vessel-alerts</code> — Kafka to Kafka, with no warehouse in the way.</p>
-        <ul class="facts"><li>Stateful: <code>applyInPandasWithState</code></li><li>Tolerates AIS “not available” sentinels</li><li>State survives restarts (checkpoint volume)</li></ul>
+        <span class="tag">Monitoring layer · real time</span>
+        <h3>See the fleet and the pipeline as it happens</h3>
+        <p>Spark Structured Streaming cleans every position within seconds. Grafana shows live traffic on a map, the alerts being raised, throughput per Kafka topic and the health of each job. A stateful Spark job compares every position with the previous one and publishes an alert on <code>vessel-alerts</code> when a ship jumps, accelerates absurdly or goes silent: Kafka to Kafka, with no warehouse in the way.</p>
+        <ul class="facts"><li>Four Grafana dashboards, generated from code</li><li>Per-vessel state: <code>applyInPandasWithState</code></li><li>Monitors the pipeline too: Kafka, Spark, JVM</li></ul>
       </article>
       <article class="card cold">
-        <span class="tag">Cold path · hourly</span>
-        <h3>“Which vessels looked suspicious over 30 days?”</h3>
-        <p>The same positions are archived as Parquet in Google Cloud Storage, read through BigQuery external tables, and modelled by dbt into seven gold tables: dark events, speed anomalies, loitering, erratic course, activity, port traffic and a 30-day risk score. Airflow runs it every hour.</p>
+        <span class="tag">Analytics layer · hourly</span>
+        <h3>Understand behaviour over time</h3>
+        <p>The same positions are archived as Parquet in Google Cloud Storage, read through BigQuery external tables and modelled by dbt into seven gold tables: vessel activity, port traffic, dark events, speed anomalies, loitering, erratic course and a 30-day risk score. Airflow runs it every hour.</p>
         <ul class="facts"><li>Bronze → Silver → Gold (medallion)</li><li>Incremental merges with surrogate keys</li><li><span data-fact="dbt_tests">104</span> dbt data tests after each run</li></ul>
       </article>
     </div>
   </div>
+</section>
+
+<section id="monitoring" class="wrap">
+  <h2>The monitoring layer</h2>
+  <p class="sub">Four Grafana dashboards, provisioned from code. They watch the ships and, just as importantly, the pipeline that watches the ships. Screenshots appear here as soon as the files exist in <code>site/assets/shots/</code>.</p>
+  <div class="gallery" id="gallery"></div>
+  <p class="note">The Kafka dashboard compares each raw topic with its Bronze counterpart instead of showing consumer-group lag: Spark does not commit its offsets to Kafka, so a lag panel would always be empty.</p>
 </section>
 
 <section id="architecture" class="wrap">
@@ -88,7 +94,7 @@
 
 <section id="results" class="band">
   <div class="wrap">
-    <h2>What the pipeline produced</h2>
+    <h2>The analytics layer</h2>
     <p class="sub">Real numbers, read from the project's BigQuery tables by <code>site/tools/refresh_data.py</code>. Vessels are shown without names and with the MMSI masked.</p>
 
     <div class="grid2">
@@ -128,6 +134,12 @@
         <h3>Risk score <small>30-day window, top of the table</small></h3>
         <div class="tablewrap"><table id="risk"></table></div>
         <p class="note">A pipeline output, not an accusation. With a few minutes of data, the score is dominated by the speed-anomaly detector, which is exactly why the next section matters.</p>
+      </div>
+
+      <div class="panel wide">
+        <h3>The hourly run <small>Airflow, nine tasks</small></h3>
+        <div id="dag-shot"></div>
+        <p class="note">The staging view is rebuilt first, then four models run in parallel, the erratic-course and risk-score models follow, and the dbt tests close the run.</p>
       </div>
     </div>
   </div>
@@ -205,14 +217,6 @@
         <li>Detectors with a window long enough to fill dark events, loitering and erratic course; they are empty after a few minutes</li>
       </ul>
     </div>
-  </div>
-</section>
-
-<section id="dashboards" class="band">
-  <div class="wrap">
-    <h2>Dashboards</h2>
-    <p class="sub">Four Grafana dashboards, generated from code. Screenshots appear here as soon as the file exists in <code>site/assets/shots/</code>.</p>
-    <div class="gallery" id="gallery"></div>
   </div>
 </section>
 

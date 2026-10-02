@@ -1,6 +1,6 @@
 # MarineFlow
 
-**A near-real-time maritime traffic pipeline built on the live AIS feed.** It ingests every vessel position broadcast worldwide, cleans and enriches it, archives it, and answers two different questions from the same data: *"which vessel just did something impossible?"* (seconds) and *"which vessels have looked suspicious over the last 30 days?"* (hourly analytics).
+**A real-time monitoring layer for ships, with an analytics layer on top.** MarineFlow ingests the live AIS feed (every vessel position broadcast worldwide), monitors traffic, alerts and the pipeline itself within seconds, and turns the same stream into hourly analytics: vessel activity, port traffic, behaviour detectors and a 30-day risk score.
 
 [![CI](https://github.com/TomasRipsky/marineflow/actions/workflows/ci.yml/badge.svg)](https://github.com/TomasRipsky/marineflow/actions/workflows/ci.yml)
 ![Kafka](https://img.shields.io/badge/Apache%20Kafka-3.7-231F20?logo=apachekafka&logoColor=white)
@@ -47,11 +47,11 @@
 
 ## 1. Overview
 
-AIS (Automatic Identification System) is how ships broadcast their identity, position, speed and heading. It is public, global and constant. MarineFlow turns that raw stream into something you can query, and it keeps two paths on purpose:
+AIS (Automatic Identification System) is how ships broadcast their identity, position, speed and heading. It is public, global and constant. MarineFlow turns that raw stream into a real-time monitoring layer and an analytics layer, and it keeps them as two paths on purpose:
 
 | | Hot path | Cold path |
 |---|---|---|
-| **Question** | "Did this vessel just jump 90 nautical miles in 30 minutes?" "Did it go silent?" | "Which vessels had several blackouts and speed anomalies this month?" |
+| **Purpose** | Monitoring: watch traffic live and flag what looks wrong the moment it happens ("did this vessel just jump 90 nautical miles in 30 minutes?", "did it go silent?") | Analytics: understand behaviour over time (blackouts and speed anomalies per vessel, port traffic, a 30-day risk score) |
 | **Latency** | Seconds (30-second micro-batches) | Hourly |
 | **Engine** | Spark, per-vessel state | Spark → GCS → BigQuery → dbt |
 | **Output** | Kafka topic `vessel-alerts` | Gold tables in BigQuery |

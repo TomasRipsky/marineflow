@@ -8,6 +8,7 @@ Drop real captures here (PNG, about 1600 px wide) with exactly these names:
 | `overview.png` | Grafana, *MarineFlow: Overview* |
 | `live-traffic.png` | Grafana, *MarineFlow: Live traffic* (with the producer running) |
 | `spark.png` | Grafana, *MarineFlow: Spark streaming* |
+| `kafka.png` | Grafana, *MarineFlow: Kafka* (topics, rates, retained messages, topic inventory table) |
 | `airflow.png` | Airflow, the `marineflow_pipeline` graph view with a green run |
 
 Capture them from a run with all five Spark jobs and the producer up, so no panel says "no data".
