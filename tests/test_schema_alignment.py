@@ -12,10 +12,19 @@ from helpers import ROOT, SPARK_DIR
 TF = (ROOT / "infra/terraform/modules/bigquery/main.tf").read_text()
 
 
+HIVE_COLUMNS = {"partition_date", "partition_hour"}
+
+
 def terraform_columns(table):
     block = TF.split(f'resource "google_bigquery_table" "{table}"', 1)[1]
     block = re.split(r'\nresource "', block, 1)[0]
-    return set(re.findall(r'\{\s*name\s*=\s*"(\w+)"', block))
+    return set(re.findall(r'\{\s*name\s*=\s*"(\w+)"', block)) - HIVE_COLUMNS
+
+
+def terraform_hive_columns(table):
+    block = TF.split(f'resource "google_bigquery_table" "{table}"', 1)[1]
+    block = re.split(r'\nresource "', block, 1)[0]
+    return dict(re.findall(r'\{\s*name\s*=\s*"(partition_\w+)",\s*type\s*=\s*"(\w+)"', block))
 
 
 def source(job):
@@ -57,6 +66,25 @@ class SilverTablesTest(unittest.TestCase):
         select = between(text, "return df.select(", ").filter")
         columns = set(re.findall(r'\.alias\("(\w+)"\)', select)) | {"_silver_batch_id"}
         self.assertEqual(terraform_columns("vessel_metadata"), columns)
+
+
+
+class HivePartitionColumnsTest(unittest.TestCase):
+    """BigQuery adds the hive partition columns to the table-level schema; the Terraform provider sends that schema on every
+    update and the API rejects it unless the external schema declares the same columns (terraform apply failed with
+    'schemas must be the same' on vessel_metadata_raw)."""
+
+    TYPES = {"partition_date": "DATE", "partition_hour": "INTEGER"}
+
+    def test_every_external_table_declares_the_columns_its_writer_partitions_by(self):
+        writers = {"vessel_positions_raw": "bronze_positions.py", "vessel_metadata_raw": "bronze_metadata.py",
+                   "vessel_positions_clean": "silver_positions.py", "vessel_metadata": "silver_metadata.py"}
+        for table, job in writers.items():
+            with self.subTest(table=table):
+                # the writer's partitionBy("partition_date"[, "partition_hour"]), not a Window.partitionBy("mmsi")
+                partitioned_by = re.search(r'\.partitionBy\(("partition_[^)]*)\)', source(job)).group(1)
+                expected = {name: self.TYPES[name] for name in re.findall(r'"(partition_\w+)"', partitioned_by)}
+                self.assertEqual(terraform_hive_columns(table), expected)
 
 
 if __name__ == "__main__":
