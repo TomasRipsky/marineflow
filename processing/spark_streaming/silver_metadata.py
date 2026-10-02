@@ -58,7 +58,7 @@ METADATA_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_metadata"
 # source type (such as the old file-source one) crashes the job.
 CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_metadata_kafka"
 
-MAX_OFFSETS_PER_TRIGGER = int(os.getenv("METADATA_MAX_OFFSETS_PER_TRIGGER", "1000"))
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("METADATA_MAX_OFFSETS_PER_TRIGGER", "4000"))
 
 # =============================================================================
 # Reference data

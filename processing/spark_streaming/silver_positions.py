@@ -80,7 +80,7 @@ KAFKA_STARTING_OFFSETS = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
 SILVER_OUTPUT_DIR = f"gs://{GCS_BUCKET}/silver/vessel_positions"
 CHECKPOINT_DIR    = f"gs://{GCS_BUCKET}/checkpoints/silver_positions_kafka"
 
-MAX_OFFSETS_PER_TRIGGER = int(os.getenv("SILVER_MAX_OFFSETS_PER_TRIGGER", "1000"))
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("SILVER_MAX_OFFSETS_PER_TRIGGER", "4000"))
 
 # =============================================================================
 # Reference data
