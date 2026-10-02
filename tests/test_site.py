@@ -66,6 +66,13 @@ class FilesTest(unittest.TestCase):
             with self.subTest(shot=name):
                 self.assertIn(f"{name}.png", notes)
 
+    def test_capture_script_covers_every_gallery_screenshot(self):
+        script = (SITE / "tools/capture_shots.mjs").read_text()
+        js = (SITE / "assets/app.js").read_text()
+        captured = set(re.findall(r'^\s+"?([\w-]+)"?: \{ app: "', script, re.M))
+        self.assertEqual(captured, set(re.findall(r'\["([\w-]+)", "', js)))
+        self.assertIn("blurMmsi: true", script)      # the alerts table shows MMSI numbers
+
     def test_pages_workflow_publishes_the_site_folder(self):
         workflow = (ROOT / ".github/workflows/pages.yml").read_text()
         self.assertIn("path: site", workflow)

@@ -72,7 +72,7 @@
 
 <section id="monitoring" class="wrap">
   <h2>The monitoring layer</h2>
-  <p class="sub">Four Grafana dashboards, provisioned from code. They watch the ships and, just as importantly, the pipeline that watches the ships. Screenshots appear here as soon as the files exist in <code>site/assets/shots/</code>.</p>
+  <p class="sub">Four Grafana dashboards, provisioned from code. They watch the ships and, just as importantly, the pipeline that watches the ships. Captured from the running stack by <code>site/tools/capture_shots.mjs</code>; the MMSI column of the alerts table is blurred.</p>
   <div class="gallery" id="gallery"></div>
   <p class="note">The Kafka dashboard compares each raw topic with its Bronze counterpart instead of showing consumer-group lag: Spark does not commit its offsets to Kafka, so a lag panel would always be empty.</p>
 </section>
@@ -193,7 +193,7 @@
 <section id="quality" class="wrap">
   <h2>Quality</h2>
   <div class="counters big">
-    <div><b data-fact="unit_tests">103</b><span>unit tests</span></div>
+    <div><b data-fact="unit_tests">104</b><span>unit tests</span></div>
     <div><b data-fact="smoke_tests">3</b><span>Spark smoke tests</span></div>
     <div><b data-fact="dbt_tests">104</b><span>dbt data tests</span></div>
     <div><b>CI</b><span>on every push</span></div>
