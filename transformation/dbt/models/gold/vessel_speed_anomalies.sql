@@ -25,9 +25,9 @@ with speed_calc as (
         lag(event_timestamp) over (partition by mmsi order by event_timestamp) as prev_timestamp
     from {{ ref('stg_vessel_positions') }}
     {% if is_incremental() %}
-        where event_timestamp >= (
-            select timestamp_sub(max(event_timestamp), interval 2 hour)
-            from {{ this }}
+        where event_timestamp >= coalesce(
+            (select timestamp_sub(max(event_timestamp), interval 2 hour) from {{ this }}),
+            timestamp('1970-01-01')  -- an empty table has no max: a NULL cutoff would exclude every row, for ever
         )
     {% endif %}
 ),

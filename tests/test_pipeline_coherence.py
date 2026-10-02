@@ -165,3 +165,20 @@ class ExternalTableUriTest(unittest.TestCase):
             with self.subTest(uri=uri):
                 self.assertTrue(uri.endswith("/partition_date=*"), uri)
 
+
+class IncrementalCutoffTest(unittest.TestCase):
+    """An incremental model that filters on max(...) of its own table gets a NULL cutoff while that table is empty, and
+    'event_timestamp >= NULL' keeps no rows: a first run that finds nothing leaves the table empty for ever (seen live:
+    vessel_speed_anomalies stayed at 0 rows while the same SQL, run by hand, found 938)."""
+
+    def test_every_incremental_cutoff_has_a_fallback_for_an_empty_table(self):
+        checked = 0
+        for path in (DBT_DIR / "models/gold").glob("*.sql"):
+            text = path.read_text()
+            for block in re.findall(r"\{% if is_incremental\(\) %\}(.*?)\{% endif %\}", text, flags=re.S):
+                if "{{ this }}" in block and "max(" in block:
+                    checked += 1
+                    with self.subTest(model=path.stem):
+                        self.assertIn("coalesce(", block)
+        self.assertGreaterEqual(checked, 3)
+
