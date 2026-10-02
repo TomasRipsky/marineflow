@@ -167,6 +167,15 @@
     });
   })();
 
+  /* the logo and the name always take you back to the top (the header is sticky, so "#top" on it would do nothing) */
+  var brand = document.querySelector(".brand");
+  if (brand) brand.addEventListener("click", function (e) {
+    e.preventDefault();
+    var calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
+    if (history.replaceState) history.replaceState(null, "", location.pathname + location.search);
+  });
+
   /* animate bars once they scroll into view -------------------------- */
   var animate = function (root) {
     root.querySelectorAll(".fill").forEach(function (f) { f.style.width = f.dataset.w + "%"; });
