@@ -45,6 +45,18 @@ class JobsScriptTest(unittest.TestCase):
         self.assertNotIn("gcs-connector", hot)
         self.assertIn("spark-sql-kafka", TEXT.split("common=", 1)[1].split("\n", 1)[0])
 
+    def test_the_readme_documents_every_command_and_job(self):
+        doc = (ROOT / "scripts" / "README.md").read_text()
+        for command in re.findall(r"^  (start|stop|status|logs)\)", TEXT, re.M):
+            with self.subTest(command=command):
+                self.assertIn(f"scripts/jobs.sh {command}", doc)
+        for job in re.search(r"ALL_JOBS=\(([^)]*)\)", TEXT).group(1).split():
+            with self.subTest(job=job):
+                self.assertIn(f"`{job}`", doc)
+        for variable in re.findall(r'^(\w+)="\$\{\1:-', TEXT, re.M):
+            with self.subTest(variable=variable):
+                self.assertIn(f"`{variable}`", doc)
+
 
 if __name__ == "__main__":
     unittest.main()
