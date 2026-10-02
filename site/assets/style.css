@@ -69,9 +69,10 @@ p { margin: 0 0 1em; }
 .hero h1 { font-size: clamp(2rem, 5.2vw, 3.7rem); max-width: 22ch; margin-bottom: .6em; }
 .hero h1 em { font-style: italic; color: var(--brass); }
 .lede { font-size: 1.15rem; color: #c6dcea; max-width: 56ch; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin: 2.2rem 0 1rem; max-width: 820px; }
-.stat { border-left: 2px solid var(--cyan); padding: .1rem 0 .1rem .9rem; }
-.stat b { display: block; font: 600 clamp(1.6rem, 3.4vw, 2.3rem)/1.1 var(--mono); color: var(--foam); }
+/* a seven-digit number in a monospace face needs about 12rem: size the columns for it, let a column shrink (min-width: 0) and break rather than overflow */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: 1.2rem 1.6rem; margin: 2.2rem 0 1rem; max-width: 980px; }
+.stat { border-left: 2px solid var(--cyan); padding: .1rem .5rem .1rem .9rem; min-width: 0; }
+.stat b { display: block; font: 600 clamp(1.5rem, 2.6vw, 2.1rem)/1.1 var(--mono); color: var(--foam); overflow-wrap: anywhere; }
 .stat span { font-size: .8rem; color: var(--mist); letter-spacing: .04em; }
 .snapshot { color: var(--mist); font-size: .84rem; max-width: 70ch; }
 
