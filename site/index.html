@@ -7,7 +7,7 @@
 <meta name="description" content="A real-time monitoring layer for ships, with an analytics layer on top, built on the live AIS feed: Kafka, Spark Structured Streaming, Grafana, dbt, Airflow and BigQuery.">
 <meta name="theme-color" content="#030d1a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23030d1a'/%3E%3Cpath d='M16 5l4 11-4 3-4-3z' fill='%2338d4ff'/%3E%3Cpath d='M6 22c3 3 7 3 10 0s7-3 10 0' stroke='%2338d4ff' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=__VERSION__">
 </head>
 <body>
 
@@ -101,13 +101,13 @@
       <div class="panel wide">
         <h3>Traffic density <small>2° cells, Silver positions</small></h3>
         <canvas id="map" width="1440" height="560" role="img" aria-label="Heat map of ship positions around the world"></canvas>
-        <p class="note">No coastline is drawn: the ships draw it. In this snapshot the brightest cell is the Dutch coast around Rotterdam, followed by the German Bight, Puget Sound, the Gulf of Athens and the US Gulf coast.</p>
+        <p class="note">No coastline is drawn: the ships draw it. In this snapshot the brightest cell is the Dutch coast around Rotterdam, followed by the German Bight and the Baltic approaches, Puget Sound, the Gulf of Athens and the US Gulf coast.</p>
       </div>
 
       <div class="panel">
-        <h3>Ingestion <small>positions per minute</small></h3>
+        <h3>Ingestion <small>positions per 5 minutes</small></h3>
         <div id="timeline" class="bars v"></div>
-        <p class="note">Two bursts, not a continuous run: on this laptop the Spark jobs were killed more than once by the Docker VM running out of memory. See <a href="#limits">limits</a>.</p>
+        <p class="note">A continuous run of the live feed, about 5,000 positions a minute, with three gaps (29, 3 and 4 minutes) where the stack was restarted. Before the Docker VM was given more memory the Spark jobs were killed more than once; see <a href="#limits">limits</a>.</p>
       </div>
 
       <div class="panel">
@@ -131,9 +131,9 @@
       </div>
 
       <div class="panel wide">
-        <h3>Risk score <small>30-day window, top of the table</small></h3>
+        <h3>Risk score <small>built for a 30-day window; here it covers the hours of this run</small></h3>
         <div class="tablewrap"><table id="risk"></table></div>
-        <p class="note">A pipeline output, not an accusation. With a few minutes of data, the score is dominated by the speed-anomaly detector, which is exactly why the next section matters.</p>
+        <p class="note">A pipeline output, not an accusation. The score is dominated by the speed-anomaly detector, and an anomaly can come from the data instead of the ship, which is exactly why the next section matters.</p>
       </div>
 
       <div class="panel wide">
@@ -146,8 +146,8 @@
 </section>
 
 <section id="case" class="wrap">
-  <h2>Case file: one identifier, two oceans</h2>
-  <p class="sub">The single fastest “impossible speed” the pipeline flagged. Names are left out on purpose.</p>
+  <h2>Case file: one identifier, two places at once</h2>
+  <p class="sub">The single fastest “impossible speed” the pipeline flagged in this run. Names are left out on purpose.</p>
   <div class="case">
     <div class="casemap"><svg id="casemap" viewBox="0 0 600 320" role="img" aria-label="Two positions of the same identifier, one in California and one in Florida, seconds apart"></svg></div>
     <div class="casetext" id="casetext"></div>
@@ -183,6 +183,9 @@
           <tr><td>A tile called “Bronze rejects” showed 56–80%</td><td>Sampling 3,000 raw messages: none failed validation. Docker showed the Bronze job <code>OOMKilled</code></td><td>Renamed to “Bronze gap”; described as a lag symptom</td></tr>
           <tr><td>Hot Alerts crashed on the second position of any vessel</td><td>The real-Spark smoke test; Spark hands state over as a tuple, which a fake had hidden</td><td>A <code>namedtuple</code></td></tr>
           <tr><td>Barcelona came out as Atlantic and New York as Pacific</td><td>Checking the 15 major ports by hand</td><td>First match wins, boxes corrected</td></tr>
+          <tr><td>The detector tables stayed empty after a green run: 0 speed anomalies in 390,000 positions</td><td>Running the model's SQL by hand found 938. An incremental cutoff of <code>max(...)</code> over an empty table is NULL, and <code>x &gt;= NULL</code> keeps no row</td><td>A <code>coalesce</code> fallback in three models, and a test</td></tr>
+          <tr><td>A dbt task failed once, then passed on retry: <code>Partition keys should be invariant</code></td><td>Spark parks each task's files under <code>_temporary/</code> for a few seconds, and the external tables matched <code>/*</code>. Reproduced 2 of 9 queries</td><td>Patterns end in <code>partition_date=*</code> (0 of 9 after)</td></tr>
+          <tr><td>Bronze wrote exactly 33 messages a second against a feed of about 95; BigQuery was 15 minutes stale</td><td>The topic offsets: the cap was 1000 rows per 30-second batch (1000 / 30)</td><td>4000 by default, and a section on sizing it</td></tr>
           <tr><td>A “speed 102.3 kn” sentinel produced false acceleration alerts</td><td>Hot path test</td><td>AIS “not available” values become null</td></tr>
         </tbody>
       </table>
@@ -205,16 +208,16 @@
         <li>Unit tests locally and in GitHub Actions</li>
         <li>Hot path and compaction on real Spark 3.5 in the project image</li>
         <li><code>dbt parse</code> with the same dbt version as Airflow</li>
-        <li>The DAG imports with the expected task graph</li>
-        <li>The full pipeline ran end to end: all seven gold tables exist and the dashboards read live Kafka and Prometheus data</li>
+        <li>A continuous run of the live feed: 4 h 25 min, 1.26 million positions. Bronze holds every position that entered Kafka, Silver all but 26 of them, the dead-letter queue stayed empty and no job crashed once the Docker memory was sized</li>
+        <li>Every Airflow run since the fixes found along the way finished with all nine tasks green, and all seven gold tables are populated except the erratic-course detector</li>
       </ul>
     </div>
     <div class="card">
       <h3>Not verified yet</h3>
       <ul class="check no">
-        <li>A long, uninterrupted run: the local Spark jobs died under memory pressure</li>
+        <li>Anything over days: the 30-day risk score, and the erratic-course detector (more than 10 sharp turns in a day), need weeks of data</li>
         <li>The compaction against the real bucket (<code>--dry-run</code> first)</li>
-        <li>Detectors with a window long enough to fill dark events, loitering and erratic course; they are empty after a few minutes</li>
+        <li>Exactly-once delivery: a job that dies mid-batch replays it (see the limits below)</li>
       </ul>
     </div>
   </div>
@@ -223,10 +226,11 @@
 <section id="limits" class="wrap">
   <h2>Limits, stated plainly</h2>
   <ul class="limits">
-    <li><b>Spark runs in local mode</b>, one container per job, started by hand. Nothing restarts a job that dies, and on a small Docker VM the kernel can kill one silently. Production would use Dataproc or GKE.</li>
+    <li><b>Spark runs in local mode</b>, one container per job, started and restarted by a small shell script. The five jobs plus Kafka, Airflow and Grafana need about 9 GiB of Docker memory (the default is 7.75): below that the kernel silently kills a job. Production would use Dataproc or GKE.</li>
     <li><b>The reference lookups are coarse.</b> Flags come from 65 MID codes (35 countries); ports are 15 bounding boxes; ocean regions are boxes too.</li>
     <li><b>No ship-to-ship transfer detection.</b> An earlier flag could never be true and was removed instead of kept as decoration.</li>
-    <li><b>Silver deduplicates and computes deltas per micro-batch</b>, not across batches.</li>
+    <li><b>At-least-once, not exactly-once.</b> After a job was killed between writing a batch and saving its checkpoint, the batch was replayed: 999 duplicate positions out of 1.26 million (0.08%) in Bronze, 981 in Silver. Silver deduplicates and computes deltas per micro-batch, not across batches, so they reach the analytics. There is a written plan to fix it.</li>
+    <li><b>The rate charts look like a sawtooth.</b> Bronze writes in 30-second micro-batches, so its output arrives in bursts and a one-minute <code>rate()</code> draws them as teeth. The input feed itself is bursty too. It is how the system works, not a measurement error.</li>
     <li><b>aisstream.io is in beta</b>, with no SLA.</li>
   </ul>
 </section>
@@ -252,7 +256,7 @@ python -m unittest discover -s tests     # no Docker, no cloud
   </div>
 </footer>
 
-<script src="assets/data.js"></script>
-<script src="assets/app.js"></script>
+<script src="assets/data.js?v=__VERSION__"></script>
+<script src="assets/app.js?v=__VERSION__"></script>
 </body>
 </html>

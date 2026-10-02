@@ -26,6 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # Pages caches every file for 10 minutes; a version in each asset URL makes a new deploy visible at once
+      - name: Stamp the commit into the asset URLs
+        run: sed -i "s/__VERSION__/${GITHUB_SHA::8}/g" site/index.html site/assets/app.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

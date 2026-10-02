@@ -22,8 +22,13 @@
     [fmt(D.gold.km), "km sailed (estimated)"]
   ];
   stats.forEach(function (s) { $("hero-stats").appendChild(el("div", "stat", "<b>" + s[0] + "</b><span>" + s[1] + "</span>")); });
-  $("snapshot-note").textContent = "Snapshot read from BigQuery on " + D.generated_at + ": positions between " +
-    D.silver.first_ts.slice(0, 16) + " and " + D.silver.last_ts.slice(0, 16) + " UTC, in two bursts (see Limits). Not a continuous 24-hour run.";
+  (function snapshotNote() {
+    var ms = function (t) { return new Date(t.replace(" ", "T").replace(/\+00$/, "Z")).getTime(); };
+    var mins = Math.round((ms(D.silver.last_ts) - ms(D.silver.first_ts)) / 60000);
+    $("snapshot-note").textContent = "Snapshot read from BigQuery on " + D.generated_at + ": live positions from " +
+      D.silver.first_ts.slice(0, 16) + " to " + D.silver.last_ts.slice(0, 16) + " UTC, " + Math.floor(mins / 60) + " h " + (mins % 60) +
+      " min of the feed. Not a 24-hour run.";
+  })();
   $("footer-note").textContent = "Data snapshot: " + D.generated_at;
 
   /* heat map --------------------------------------------------------- */
@@ -55,14 +60,14 @@
     var toMin = function (t) { return parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10); };
     D.minutes.forEach(function (m, i) {
       if (i > 0) {
-        var gap = toMin(m.t) - toMin(D.minutes[i - 1].t) - 1;
-        if (gap > 1) host.appendChild(el("div", "gap", "no<br>data<br>" + Math.floor(gap / 60) + "h " + (gap % 60) + "m"));
+        var gap = toMin(m.t) - toMin(D.minutes[i - 1].t) - 5;            // five-minute buckets
+        if (gap >= 5) host.appendChild(el("div", "gap", "no<br>data<br>" + Math.floor(gap / 60) + "h " + (gap % 60) + "m"));
       }
       var col = el("div", "col"), bar = el("div", "bar");
       bar.dataset.h = Math.max(3, Math.round(m.n / peak * 100));
-      bar.title = m.t + " UTC: " + fmt(m.n) + " positions";
+      bar.title = m.t + " UTC, 5 min: " + fmt(m.n) + " positions";
       col.appendChild(bar);
-      if (i === 0 || m.t.slice(3) === "00" || (i > 0 && toMin(m.t) - toMin(D.minutes[i - 1].t) > 2)) col.appendChild(el("span", "tick", m.t));
+      if (i === 0 || m.t.slice(3) === "00" || (i > 0 && toMin(m.t) - toMin(D.minutes[i - 1].t) > 5)) col.appendChild(el("span", "tick", m.t));
       host.appendChild(col);
     });
   })();
@@ -123,12 +128,18 @@
     var ts = function (s) { return new Date(s.replace(" ", "T").replace(/\+00$/, "Z")).getTime(); };
     var dt = (ts(p[1].ts) - ts(p[0].ts)) / 1000;
 
-    var lonMin = -130, lonMax = -70, latMin = 15, latMax = 50, W = 600, H = 320;
+    // fit the map to the two points, with room around them, whatever the case is
+    var spanLon = Math.abs(p[1].lon - p[0].lon), spanLat = Math.abs(p[1].lat - p[0].lat);
+    var padLon = Math.max(10, spanLon * 0.35), padLat = Math.max(8, spanLat * 0.35);
+    var lonMin = Math.min(p[0].lon, p[1].lon) - padLon, lonMax = Math.max(p[0].lon, p[1].lon) + padLon;
+    var latMin = Math.min(p[0].lat, p[1].lat) - padLat, latMax = Math.max(p[0].lat, p[1].lat) + padLat, W = 600, H = 320;
+    var nice = function (span) { var steps = [1, 2, 5, 10, 20, 30, 45]; for (var k = 0; k < steps.length; k++) if (span / steps[k] <= 5) return steps[k]; return 60; };
     var X = function (lon) { return (lon - lonMin) / (lonMax - lonMin) * W; }, Y = function (lat) { return (latMax - lat) / (latMax - latMin) * H; };
-    var svg = $("casemap"), out = "";
-    for (var lo = -120; lo <= -80; lo += 10) out += "<line x1='" + X(lo) + "' y1='0' x2='" + X(lo) + "' y2='" + H + "' stroke='rgba(56,212,255,.12)'/><text x='" + (X(lo) + 4) + "' y='" + (H - 6) + "' fill='rgba(143,176,200,.6)' font-size='11' font-family='ui-monospace,monospace'>" + Math.abs(lo) + "W</text>";
-    for (var la = 20; la <= 45; la += 10) out += "<line x1='0' y1='" + Y(la) + "' x2='" + W + "' y2='" + Y(la) + "' stroke='rgba(56,212,255,.12)'/><text x='6' y='" + (Y(la) - 4) + "' fill='rgba(143,176,200,.6)' font-size='11' font-family='ui-monospace,monospace'>" + la + "N</text>";
-    var x1 = X(p[0].lon), y1 = Y(p[0].lat), x2 = X(p[1].lon), y2 = Y(p[1].lat), mx = (x1 + x2) / 2, my = Math.min(y1, y2) - 46;
+    var svg = $("casemap"), out = "", gl = "stroke='rgba(56,212,255,.12)'", gt = "fill='rgba(143,176,200,.6)' font-size='11' font-family='ui-monospace,monospace'";
+    var lonStep = nice(lonMax - lonMin), latStep = nice(latMax - latMin);
+    for (var lo = Math.ceil(lonMin / lonStep) * lonStep; lo <= lonMax; lo += lonStep) out += "<line x1='" + X(lo) + "' y1='0' x2='" + X(lo) + "' y2='" + H + "' " + gl + "/><text x='" + (X(lo) + 4) + "' y='" + (H - 6) + "' " + gt + ">" + Math.abs(lo) + (lo < 0 ? "W" : "E") + "</text>";
+    for (var la = Math.ceil(latMin / latStep) * latStep; la <= latMax; la += latStep) out += "<line x1='0' y1='" + Y(la) + "' x2='" + W + "' y2='" + Y(la) + "' " + gl + "/><text x='6' y='" + (Y(la) - 4) + "' " + gt + ">" + Math.abs(la) + (la < 0 ? "S" : "N") + "</text>";
+    var x1 = X(p[0].lon), y1 = Y(p[0].lat), x2 = X(p[1].lon), y2 = Y(p[1].lat), mx = (x1 + x2) / 2, my = Math.max(24, Math.min(y1, y2) - 46);
     out += "<path d='M" + x1 + " " + y1 + " Q" + mx + " " + my + " " + x2 + " " + y2 + "' fill='none' stroke='#f0b44c' stroke-width='2' stroke-dasharray='7 6'/>";
     out += "<text x='" + mx + "' y='" + (my + 18) + "' text-anchor='middle' fill='#f0b44c' font-size='15' font-family='ui-monospace,monospace'>" + fmt(km) + " km in " + dt.toFixed(1) + " s</text>";
     [[x1, y1, p[0], "first report"], [x2, y2, p[1], "second report"]].forEach(function (d) {
@@ -138,12 +149,16 @@
     });
     svg.innerHTML = out;
 
+    var statusOf = function (q) { return (q.status || "no status").replace(/_/g, " "); };
+    var sameStatus = statusOf(p[0]) === statusOf(p[1]);
+    var sameLon = Math.abs(p[1].lon - p[0].lon) < 0.01, sameLat = Math.abs(p[1].lat - p[0].lat) < 0.01;
+    var hint = sameLon || sameLat ? " Here the " + (sameLon ? "longitude" : "latitude") + " is identical and only the other coordinate changes, which is what a corrupted position report looks like." : "";
     $("casetext").innerHTML =
       "<span class='big'>" + fmt(C.speed_knots) + " kn</span><p style='color:var(--mist)'>the speed the pipeline computed for MMSI " + C.mmsi + "</p>" +
       "<ol><li>Two position reports with the <b>same identifier</b>, " + dt.toFixed(1) + " seconds apart.</li>" +
-      "<li>One reports " + (p[0].status || "no status").replace(/_/g, " ") + " at " + coord(p[0]) + ", the other " + (p[1].status || "no status").replace(/_/g, " ") + " at " + coord(p[1]) + ": " + fmt(km) + " km apart.</li>" +
-      "<li>Dividing distance by time gives a figure of the same order (the dbt model counts whole seconds, which is why it is not identical). No ship does that, and the two reports do not even agree on what the vessel is doing.</li></ol>" +
-      "<p class='verdict'>The likeliest explanation is two transmitters sharing one MMSI, not a ship that teleported. The detector cannot tell a duplicated identifier from deliberate spoofing, and a single row like this raises a vessel's risk score: a reminder that the score is a lead to check, not a verdict.</p>";
+      "<li>One is at " + coord(p[0]) + ", the other at " + coord(p[1]) + ": " + fmt(km) + " km apart. " + (sameStatus ? "Both say <b>" + statusOf(p[0]) + "</b>." : "One says <b>" + statusOf(p[0]) + "</b>, the other <b>" + statusOf(p[1]) + "</b>.") + "</li>" +
+      "<li>Dividing distance by time gives a figure of the same order (the dbt model counts whole seconds, which is why it is not identical). No ship does that.</li></ol>" +
+      "<p class='verdict'>Several explanations fit: two transmitters sharing one MMSI, a corrupted position report, or deliberate spoofing." + hint + " The detector cannot tell them apart from the data alone, and a single row like this raises a vessel's risk score: the score is a lead to check, not a verdict.</p>";
   })();
 
   /* gallery: real screenshots when the file exists, an honest placeholder when not */
@@ -161,7 +176,7 @@
       img.alt = "Screenshot of the " + s[1] + " view"; img.loading = "lazy";
       var pending = el("div", "pending", "<b>Screenshot pending</b><span>assets/shots/" + s[0] + ".png</span>");
       img.onload = function () { fig.replaceChild(img, pending); };
-      img.src = "assets/shots/" + s[0] + ".png";
+      img.src = "assets/shots/" + s[0] + ".png?v=__VERSION__";
       fig.appendChild(pending); fig.appendChild(cap);
       $(s[3]).appendChild(fig);
     });

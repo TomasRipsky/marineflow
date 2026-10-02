@@ -80,8 +80,9 @@ def main():
     data["types"] = num(run(f"""
         SELECT vessel_type k, COUNT(*) n FROM {gold}.vessel_activity_summary`
         GROUP BY 1 ORDER BY 2 DESC LIMIT 8"""), "n")
+    # five-minute buckets (the key keeps its old name, "minutes")
     data["minutes"] = num(run(f"""
-        SELECT FORMAT_TIMESTAMP('%H:%M', TIMESTAMP_TRUNC(event_timestamp, MINUTE)) t, COUNT(*) n
+        SELECT FORMAT_TIMESTAMP('%H:%M', TIMESTAMP_SECONDS(300 * DIV(UNIX_SECONDS(event_timestamp), 300))) t, COUNT(*) n
         FROM {silver} GROUP BY 1 ORDER BY 1"""), "n")
     data["grid"] = [[int(r["la"]), int(r["lo"]), int(r["n"])] for r in run(f"""
         SELECT CAST(ROUND(latitude / 2) * 2 AS INT64) la, CAST(ROUND(longitude / 2) * 2 AS INT64) lo, COUNT(*) n

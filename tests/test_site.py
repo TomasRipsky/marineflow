@@ -50,7 +50,7 @@ class FactsTest(unittest.TestCase):
 
 class FilesTest(unittest.TestCase):
     def test_local_references_exist(self):
-        for ref in re.findall(r'(?:src|href)="(assets/[^"]+)"', HTML):
+        for ref in re.findall(r'(?:src|href)="(assets/[^"?]+)(?:\?[^"]*)?"', HTML):
             with self.subTest(ref=ref):
                 self.assertTrue((SITE / ref).exists())
 
@@ -76,6 +76,8 @@ class FilesTest(unittest.TestCase):
     def test_pages_workflow_publishes_the_site_folder(self):
         workflow = (ROOT / ".github/workflows/pages.yml").read_text()
         self.assertIn("path: site", workflow)
+        self.assertIn("__VERSION__", workflow)                       # cache busting is stamped at deploy time
+        self.assertGreaterEqual(HTML.count("?v=__VERSION__"), 3)     # style, data and app
         self.assertIn("deploy-pages", workflow)
 
 
