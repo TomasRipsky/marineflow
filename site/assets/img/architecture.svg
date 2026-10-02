@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-labelledby="t d">
+  <title id="t">MarineFlow architecture</title>
+  <desc id="d">AIS messages flow through Kafka and Spark into a hot path that raises alerts within seconds and a cold path that lands in GCS, BigQuery and dbt gold tables, orchestrated by Airflow and observed with Prometheus and Grafana.</desc>
+  <defs>
+    <style>
+      text { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+      .title { font-size: 24px; font-weight: 700; }
+      .sub { font-size: 13px; fill: #57606a; }
+      .band { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1.2; }
+      .bandlabel { font-size: 11px; font-weight: 700; letter-spacing: 1.4px; fill: #6e7781; }
+      .h { font-size: 13.5px; font-weight: 700; }
+      .s { font-size: 11.5px; fill: #57606a; }
+      .cold rect.box { fill: #ddf4ff; stroke: #0969da; }
+      .hot rect.box { fill: #ffebe9; stroke: #cf222e; }
+      .kafka rect.box { fill: #fff8c5; stroke: #bf8700; }
+      .store rect.box { fill: #dafbe1; stroke: #1a7f37; }
+      .orch rect.box { fill: #fbefff; stroke: #8250df; }
+      .ops rect.box { fill: #ffffff; stroke: #8c959f; }
+      rect.box { stroke-width: 1.6; }
+      .hot .h, .hot .s { fill: #82071e; } .hot .s { opacity: .85; }
+      .cold .h { fill: #0a3069; }
+      .kafka .h { fill: #4d2d00; }
+      .store .h { fill: #0f5323; }
+      .orch .h { fill: #4a1d96; }
+      .badge circle { fill: #1f2328; }
+      .badge.hotb circle { fill: #cf222e; }
+      .badge text { fill: #fff; font-size: 11px; font-weight: 700; text-anchor: middle; }
+      .c { text-anchor: middle; }
+      .flow { stroke: #57606a; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .hotflow { stroke: #cf222e; stroke-width: 1.8; fill: none; marker-end: url(#arrowhot); }
+      .archive { stroke: #1a7f37; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; marker-end: url(#arrowgreen); }
+      .dlq { stroke: #8c959f; stroke-width: 1.4; fill: none; stroke-dasharray: 3 3; marker-end: url(#arrow); }
+      .orchline { stroke: #8250df; stroke-width: 1.6; fill: none; stroke-dasharray: 3 3; }
+      .pill { fill: #ffffff; stroke: #8c959f; stroke-width: 1.2; }
+      .pilltext { font-size: 11px; fill: #57606a; text-anchor: middle; }
+      .lane { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; }
+      .note { font-size: 11.5px; fill: #57606a; font-style: italic; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+    <marker id="arrowhot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#cf222e"/></marker>
+    <marker id="arrowgreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/></marker>
+  </defs>
+
+  <rect x="0.6" y="0.6" width="1198.8" height="718.8" rx="14" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
+
+  <text class="title" x="24" y="40">MarineFlow</text>
+  <text class="sub" x="24" y="60">Near-real-time AIS pipeline · Lambda architecture: one Kafka, a hot path and a cold path</text>
+
+  <!-- legend -->
+  <g font-size="11.5">
+    <rect x="690" y="26" width="12" height="12" rx="3" fill="#ffebe9" stroke="#cf222e" stroke-width="1.4"/><text x="708" y="36" class="s">Hot path</text>
+    <rect x="775" y="26" width="12" height="12" rx="3" fill="#ddf4ff" stroke="#0969da" stroke-width="1.4"/><text x="793" y="36" class="s">Cold path</text>
+    <rect x="866" y="26" width="12" height="12" rx="3" fill="#fff8c5" stroke="#bf8700" stroke-width="1.4"/><text x="884" y="36" class="s">Kafka</text>
+    <rect x="937" y="26" width="12" height="12" rx="3" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.4"/><text x="955" y="36" class="s">GCP storage</text>
+    <rect x="1042" y="26" width="12" height="12" rx="3" fill="#fbefff" stroke="#8250df" stroke-width="1.4"/><text x="1060" y="36" class="s">Orchestration</text>
+  </g>
+
+  <!-- ========== BAND A: local streaming ========== -->
+  <rect class="band" x="20" y="74" width="1160" height="282" rx="12"/>
+  <text class="bandlabel" x="38" y="96">LOCAL · DOCKER COMPOSE</text>
+
+  <!-- row A -->
+  <g class="ops"><rect class="box" x="40" y="116" width="140" height="64" rx="9"/>
+    <text class="h c" x="110" y="143">aisstream.io</text><text class="s c" x="110" y="162">live AIS · WebSocket</text></g>
+  <g class="badge"><circle cx="40" cy="116" r="11"/><text x="40" y="120">1</text></g>
+
+  <g class="cold"><rect class="box" x="220" y="116" width="150" height="64" rx="9"/>
+    <text class="h c" x="295" y="143">AIS Producer</text><text class="s c" x="295" y="162">Python · retry · DLQ</text></g>
+  <g class="badge"><circle cx="220" cy="116" r="11"/><text x="220" y="120">2</text></g>
+
+  <g class="kafka"><rect class="box" x="410" y="116" width="180" height="64" rx="9"/>
+    <text class="h c" x="500" y="138">Kafka · raw topics</text>
+    <text class="s c" x="500" y="154">vessel-positions</text><text class="s c" x="500" y="168">vessel-metadata</text></g>
+  <g class="badge"><circle cx="410" cy="116" r="11"/><text x="410" y="120">3</text></g>
+
+  <g class="cold"><rect class="box" x="630" y="116" width="170" height="64" rx="9"/>
+    <text class="h c" x="715" y="143">Bronze · Spark</text><text class="s c" x="715" y="162">raw archive + Kafka copy</text></g>
+  <g class="badge"><circle cx="630" cy="116" r="11"/><text x="630" y="120">4</text></g>
+
+  <g class="kafka"><rect class="box" x="840" y="116" width="180" height="64" rx="9"/>
+    <text class="h c" x="930" y="138">Kafka · bronze topics</text>
+    <text class="s c" x="930" y="154">vessel-positions-bronze</text><text class="s c" x="930" y="168">vessel-metadata-bronze</text></g>
+  <g class="badge"><circle cx="840" cy="116" r="11"/><text x="840" y="120">5</text></g>
+
+  <path class="flow" d="M180,148 L218,148"/>
+  <path class="flow" d="M370,148 L408,148"/>
+  <path class="flow" d="M590,148 L628,148"/>
+  <path class="flow" d="M800,148 L838,148"/>
+
+  <!-- DLQ -->
+  <rect class="pill" x="430" y="196" width="140" height="24" rx="12"/><text class="pilltext" x="500" y="212">dead-letter-queue</text>
+  <path class="dlq" d="M295,180 L295,208 L428,208"/>
+
+  <text class="note" x="1040" y="140">One *-bronze topic,</text>
+  <text class="note" x="1040" y="156">two independent consumers</text>
+
+  <!-- row B : hot + silver -->
+  <text class="lane" x="48" y="288" fill="#cf222e" style="fill:#cf222e">HOT PATH</text>
+  <text class="s" x="48" y="304">alerts within seconds</text>
+
+  <g class="kafka"><rect class="box" x="200" y="252" width="240" height="64" rx="9"/>
+    <text class="h c" x="320" y="274">Kafka · vessel-alerts</text>
+    <text class="s c" x="320" y="290">GPS_SPOOFING · IMPOSSIBLE_SPEED</text><text class="s c" x="320" y="304">SUDDEN_ACCELERATION · AIS_GAP</text></g>
+  <g class="badge hotb"><circle cx="200" cy="252" r="11"/><text x="200" y="256" style="font-size:9.5px">H2</text></g>
+
+  <g class="hot"><rect class="box" x="480" y="252" width="200" height="64" rx="9"/>
+    <text class="h c" x="580" y="279">Hot Alerts · Spark</text><text class="s c" x="580" y="298">per-vessel state · gap timeout</text></g>
+  <g class="badge hotb"><circle cx="480" cy="252" r="11"/><text x="480" y="256" style="font-size:9.5px">H1</text></g>
+
+  <g class="cold"><rect class="box" x="920" y="252" width="220" height="64" rx="9"/>
+    <text class="h c" x="1030" y="279">Silver · Spark</text><text class="s c" x="1030" y="298">dedup · enrichment · flags · regions</text></g>
+  <g class="badge"><circle cx="920" cy="252" r="11"/><text x="920" y="256">6</text></g>
+
+  <path class="hotflow" d="M880,180 L880,216 L580,216 L580,250"/>
+  <path class="hotflow" d="M478,284 L442,284"/>
+  <path class="flow" d="M980,180 L980,250"/>
+
+  <!-- ========== BAND B: GCP ========== -->
+  <rect class="band" x="20" y="376" width="1160" height="172" rx="12"/>
+  <text class="bandlabel" x="38" y="398">GOOGLE CLOUD · STORAGE AND WAREHOUSE</text>
+
+  <g class="store"><rect class="box" x="730" y="424" width="230" height="66" rx="9"/>
+    <text class="h c" x="845" y="452">Cloud Storage · data lake</text><text class="s c" x="845" y="471">bronze/ · silver/ · Parquet, append-only</text></g>
+  <g class="badge"><circle cx="730" cy="424" r="11"/><text x="730" y="428">7</text></g>
+
+  <g class="store"><rect class="box" x="470" y="424" width="220" height="66" rx="9"/>
+    <text class="h c" x="580" y="452">BigQuery · external tables</text><text class="s c" x="580" y="471">read the GCS files in place</text></g>
+  <g class="badge"><circle cx="470" cy="424" r="11"/><text x="470" y="428">8</text></g>
+
+  <g class="cold"><rect class="box" x="220" y="424" width="210" height="66" rx="9"/>
+    <text class="h c" x="325" y="452">dbt · gold models</text><text class="s c" x="325" y="471">7 models · 104 data tests</text></g>
+  <g class="badge"><circle cx="220" cy="424" r="11"/><text x="220" y="428">9</text></g>
+
+  <g class="store"><rect class="box" x="40" y="424" width="140" height="66" rx="9"/>
+    <text class="h c" x="110" y="452">BigQuery gold</text><text class="s c" x="110" y="471">native tables</text></g>
+
+  <path class="flow" d="M728,457 L692,457"/>
+  <path class="flow" d="M468,457 L432,457"/>
+  <path class="flow" d="M218,457 L182,457"/>
+
+  <!-- Bronze -> GCS (archive), Silver -> GCS -->
+  <path class="archive" d="M760,180 L760,422"/>
+  <path class="flow" d="M1030,316 L1030,457 L962,457"/>
+  <text class="note" x="770" y="360">raw archive (never overwritten)</text>
+
+  <!-- Airflow bar -->
+  <g class="orch"><rect class="box" x="220" y="508" width="470" height="28" rx="14"/>
+    <text class="h c" x="455" y="527" style="font-size:12px">Airflow · hourly at :05 → check Silver is fresh → dbt run → dbt test</text></g>
+  <path class="orchline" d="M325,508 L325,492"/>
+
+  <!-- ========== BAND C: ops ========== -->
+  <rect class="band" x="20" y="568" width="1160" height="132" rx="12"/>
+  <text class="bandlabel" x="38" y="590">OBSERVABILITY · QUALITY · INFRASTRUCTURE</text>
+
+  <g class="ops"><rect class="box" x="40" y="608" width="270" height="70" rx="9"/>
+    <text class="h c" x="175" y="636">Prometheus + Grafana</text><text class="s c" x="175" y="656">Spark streaming metrics · Kafka lag</text></g>
+  <g class="ops"><rect class="box" x="335" y="608" width="290" height="70" rx="9"/>
+    <text class="h c" x="480" y="636">93 unit tests + 3 Spark smoke tests</text><text class="s c" x="480" y="656">mappings · hot path · compaction · wiring</text></g>
+  <g class="ops"><rect class="box" x="650" y="608" width="240" height="70" rx="9"/>
+    <text class="h c" x="770" y="636">GitHub Actions CI</text><text class="s c" x="770" y="656">compile · tests · dbt parse</text></g>
+  <g class="ops"><rect class="box" x="915" y="608" width="245" height="70" rx="9"/>
+    <text class="h c" x="1037" y="636">Terraform</text><text class="s c" x="1037" y="656">GCS · BigQuery · IAM (3 modules)</text></g>
+</svg>

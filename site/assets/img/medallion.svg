@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600" role="img" aria-labelledby="t d">
+  <title id="t">MarineFlow data layers</title>
+  <desc id="d">Bronze keeps the raw AIS records, Silver cleans and enriches them, Gold turns them into analytics tables with dbt.</desc>
+  <defs>
+    <style>
+      text { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+      .title { font-size: 24px; font-weight: 700; }
+      .sub { font-size: 13px; fill: #57606a; }
+      .card { fill: #ffffff; stroke-width: 1.8; }
+      .lname { font-size: 20px; font-weight: 800; letter-spacing: .5px; }
+      .ltag { font-size: 12.5px; }
+      .sec { font-size: 10.5px; font-weight: 700; letter-spacing: 1.3px; fill: #6e7781; }
+      .t { font-size: 12.5px; }
+      .m { font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #0a3069; }
+      .arrow { stroke: #57606a; stroke-width: 2; fill: none; marker-end: url(#a); }
+      .alabel { font-size: 11.5px; fill: #57606a; text-anchor: middle; }
+      .strip { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1.2; }
+      .stripT { font-size: 12.5px; }
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+  </defs>
+
+  <rect x="0.6" y="0.6" width="1198.8" height="598.8" rx="14" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
+  <text class="title" x="24" y="40">Data layers</text>
+  <text class="sub" x="24" y="60">Medallion architecture · each layer reads the previous one and never rewrites it</text>
+
+  <!-- BRONZE -->
+  <rect class="card" x="30" y="84" width="360" height="404" rx="12" stroke="#d97706"/>
+  <path d="M30,96 a12,12 0 0 1 12,-12 h336 a12,12 0 0 1 12,12 v52 h-360 z" fill="#fff1e0"/>
+  <text class="lname" x="50" y="114" style="fill:#9a4d00">BRONZE</text>
+  <text class="ltag" x="50" y="136" style="fill:#9a4d00">raw, replayable archive</text>
+  <text class="sec" x="50" y="170">READS</text>
+  <text class="t" x="50" y="188">Kafka: vessel-positions, vessel-metadata</text>
+  <text class="sec" x="50" y="218">DOES</text>
+  <text class="t" x="50" y="236">· parses the raw aisstream.io JSON</text>
+  <text class="t" x="50" y="254">· keeps the original field names</text>
+  <text class="t" x="50" y="272">· drops only impossible coordinates</text>
+  <text class="t" x="50" y="290">· adds lineage: batch id, version, time</text>
+  <text class="t" x="50" y="308">· partitions by date and hour</text>
+  <text class="sec" x="50" y="338">WRITES</text>
+  <text class="t" x="50" y="356">· GCS bronze/  (Parquet, append-only)</text>
+  <text class="t" x="50" y="374">· Kafka *-bronze  (Silver + Hot Alerts)</text>
+  <text class="sec" x="50" y="404">EXAMPLE COLUMNS</text>
+  <text class="m" x="50" y="422">MMSI · Latitude · Longitude · Sog · Cog</text>
+  <text class="m" x="50" y="440">TrueHeading · NavigationalStatus</text>
+  <text class="m" x="50" y="458">time_utc · _batch_id · ingestion_timestamp</text>
+
+  <!-- SILVER -->
+  <rect class="card" x="420" y="84" width="360" height="404" rx="12" stroke="#6e7781"/>
+  <path d="M420,96 a12,12 0 0 1 12,-12 h336 a12,12 0 0 1 12,12 v52 h-360 z" fill="#eaeef2"/>
+  <text class="lname" x="440" y="114" style="fill:#32383f">SILVER</text>
+  <text class="ltag" x="440" y="136" style="fill:#32383f">clean, typed and enriched</text>
+  <text class="sec" x="440" y="170">READS</text>
+  <text class="t" x="440" y="188">Kafka: vessel-positions-bronze, vessel-metadata-bronze</text>
+  <text class="sec" x="440" y="218">DOES</text>
+  <text class="t" x="440" y="236">· snake_case names, dedup per micro-batch</text>
+  <text class="t" x="440" y="254">· AIS "not available" → null (SOG, COG, heading)</text>
+  <text class="t" x="440" y="272">· flag from the MMSI: 65 MIDs · 35 countries</text>
+  <text class="t" x="440" y="290">· 11 ocean boxes → 7 regions · 15 port zones</text>
+  <text class="t" x="440" y="308">· speed and heading change per vessel</text>
+  <text class="t" x="440" y="326">· ship type → 11 categories, status → labels</text>
+  <text class="sec" x="440" y="356">WRITES</text>
+  <text class="t" x="440" y="374">· GCS silver/  (Parquet, by partition_date)</text>
+  <text class="sec" x="440" y="404">EXAMPLE COLUMNS</text>
+  <text class="m" x="440" y="422">mmsi · latitude · speed_over_ground</text>
+  <text class="m" x="440" y="440">flag_country · ocean_region · port_name</text>
+  <text class="m" x="440" y="458">is_in_port_zone · event_timestamp</text>
+
+  <!-- GOLD -->
+  <rect class="card" x="810" y="84" width="360" height="404" rx="12" stroke="#bf8700"/>
+  <path d="M810,96 a12,12 0 0 1 12,-12 h336 a12,12 0 0 1 12,12 v52 h-360 z" fill="#fff8c5"/>
+  <text class="lname" x="830" y="114" style="fill:#7d4e00">GOLD</text>
+  <text class="ltag" x="830" y="136" style="fill:#7d4e00">analytics tables, built by dbt</text>
+  <text class="sec" x="830" y="170">READS</text>
+  <text class="t" x="830" y="188">BigQuery external tables, via stg_vessel_positions</text>
+  <text class="sec" x="830" y="218">TABLES · 3 MODELS</text>
+  <text class="m" x="830" y="236">vessel_activity_summary</text>
+  <text class="m" x="830" y="254">port_traffic · vessel_erratic_course</text>
+  <text class="sec" x="830" y="284">INCREMENTAL (MERGE) · 4 MODELS</text>
+  <text class="m" x="830" y="302">vessel_dark_events · vessel_speed_anomalies</text>
+  <text class="m" x="830" y="320">vessel_loitering · vessel_risk_score</text>
+  <text class="sec" x="830" y="350">QUALITY</text>
+  <text class="t" x="830" y="368">· 104 data tests (grain, ranges, accepted values)</text>
+  <text class="t" x="830" y="386">· partitioned by date, clustered by vessel</text>
+  <text class="sec" x="830" y="416">RUNS</text>
+  <text class="t" x="830" y="434">· hourly, through Airflow (dbt run, then dbt test)</text>
+
+  <!-- arrows -->
+  <path class="arrow" d="M392,286 L418,286"/>
+  <path class="arrow" d="M782,286 L808,286"/>
+
+  <!-- consistency strip -->
+  <rect class="strip" x="30" y="508" width="1140" height="64" rx="10"/>
+  <text class="sec" x="50" y="530">KEPT CONSISTENT BY TESTS</text>
+  <text class="stripT" x="50" y="552">Terraform external-table schemas match what the jobs write · every Silver ship category has a dbt speed limit · flags come from one shared table · the DAG runs every gold model</text>
+</svg>
