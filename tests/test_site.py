@@ -75,6 +75,16 @@ class FilesTest(unittest.TestCase):
         self.assertNotIn("new Image()", gallery)
         self.assertIn("fig.appendChild(img)", gallery)
 
+    def test_screenshots_open_in_a_closable_lightbox(self):
+        js = (SITE / "assets/app.js").read_text()
+        css = (SITE / "assets/style.css").read_text()
+        for needle in ('"Escape"', 'role", "dialog"', "lb-close", "lightbox.open(img", 'e.key === "Enter"'):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, js)
+        for selector in (".lightbox {", ".lightbox.full", "html.lb-open", ".lightbox[hidden]"):
+            with self.subTest(selector=selector):
+                self.assertIn(selector, css)
+
     def test_hero_numbers_have_room(self):
         """A seven-digit number in the monospace face is about 12rem wide; the columns must be at least that and may shrink."""
         css = (SITE / "assets/style.css").read_text()
