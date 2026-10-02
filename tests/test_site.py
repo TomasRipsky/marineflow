@@ -66,6 +66,22 @@ class FilesTest(unittest.TestCase):
             with self.subTest(shot=name):
                 self.assertIn(f"{name}.png", notes)
 
+    def test_gallery_images_are_attached_to_the_page_and_not_lazy(self):
+        """A detached <img> with loading="lazy" can stay unloaded for ever in some browsers: the placeholder
+        frames stayed on screen on the live site although the PNGs were there."""
+        js = (SITE / "assets/app.js").read_text()
+        gallery = js.split("function gallery()", 1)[1].split("})();", 1)[0]
+        self.assertNotIn('"lazy"', gallery)
+        self.assertNotIn("new Image()", gallery)
+        self.assertIn("fig.appendChild(img)", gallery)
+
+    def test_hero_numbers_have_room(self):
+        """A seven-digit number in the monospace face is about 12rem wide; the columns must be at least that and may shrink."""
+        css = (SITE / "assets/style.css").read_text()
+        stats = css.split(".stats {", 1)[1].split("}", 1)[0]
+        self.assertRegex(stats, r"minmax\(min\(100%, 1[3-9]rem\), 1fr\)")
+        self.assertIn("min-width: 0", css.split(".stat {", 1)[1].split("}", 1)[0])
+
     def test_capture_script_covers_every_gallery_screenshot(self):
         script = (SITE / "tools/capture_shots.mjs").read_text()
         js = (SITE / "assets/app.js").read_text()

@@ -172,12 +172,17 @@
     ];
     shots.forEach(function (s) {
       var fig = el("figure", "shot"), cap = el("figcaption", "", "<b>" + s[1] + "</b> — " + s[2]);
-      var img = new Image();
-      img.alt = "Screenshot of the " + s[1] + " view"; img.loading = "lazy";
+      // The <img> goes into the page right away (hidden until it has loaded) instead of being built detached:
+      // a detached image with lazy loading can stay unloaded for ever in some browsers, which left the
+      // "pending" frame on screen although the file was there.
+      var img = document.createElement("img");
+      img.alt = "Screenshot of the " + s[1] + " view"; img.loading = "eager"; img.decoding = "async";
+      img.style.display = "none";
       var pending = el("div", "pending", "<b>Screenshot pending</b><span>assets/shots/" + s[0] + ".png</span>");
-      img.onload = function () { fig.replaceChild(img, pending); };
+      img.onload = function () { pending.remove(); img.style.display = ""; };
+      img.onerror = function () { pending.innerHTML = "<b>Screenshot not available</b><span>assets/shots/" + s[0] + ".png could not be loaded</span>"; };
+      fig.appendChild(pending); fig.appendChild(img); fig.appendChild(cap);
       img.src = "assets/shots/" + s[0] + ".png?v=__VERSION__";
-      fig.appendChild(pending); fig.appendChild(cap);
       $(s[3]).appendChild(fig);
     });
   })();
