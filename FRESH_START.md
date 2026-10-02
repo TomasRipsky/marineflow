@@ -2,6 +2,16 @@
 
 Use this for an end-to-end test on empty data. It **deletes data** in Kafka, in the GCS bucket and in the BigQuery gold dataset, so read each block before you paste it. Nothing here is run for you.
 
+## Before you start: give Docker enough memory
+
+Everything runs inside Docker Desktop's single VM. Measured with `docker stats` during this project: the Spark drivers use about 1.1 to 1.6 GiB each (five of them), Kafka about 0.8, Grafana 0.6 to 1.0, Airflow about 0.9. With all five jobs that adds up to roughly **9 GiB** (two of the five were not measured under load, so that is an estimate), against a VM that defaults to **7.75 GiB**. When the VM runs out, the Linux OOM killer ends a job silently; this is what killed Bronze metadata and Hot Alerts in the first end-to-end run.
+
+1. Docker Desktop → Settings → Resources → **Memory: 11 to 12 GiB** (on a 16 GiB Mac that leaves 4 to 5 GiB for macOS, the producer and your browser) → Apply & restart.
+2. Check it took effect: `docker info --format '{{.MemTotal}}'` should print about 12 000 000 000.
+3. Prefer `scripts/jobs.sh` over five terminals in step 7: it starts the jobs one at a time (five JVMs starting together spike memory) and restarts any job that is killed, so a kill costs 15 seconds instead of a dead series. `scripts/jobs.sh status` shows memory per job, OOM kills and restarts.
+
+If it still dies, lower the load rather than raising it further: the two metadata jobs handle about one message per second, so `DRIVER_MEMORY=512m scripts/jobs.sh start bronze-metadata silver-metadata` is worth trying (watch `status`; if a job restarts repeatedly, give it back 1g).
+
 Every command is meant to be run from the repository root, in this order. Steps 1 to 4 destroy; steps 5 to 9 rebuild and check.
 
 | Step | What | Destroys data? |
@@ -120,7 +130,18 @@ docker compose ps
 
 Every service should be `running` (`kafka-init-topics` and `airflow-init` exit after finishing, which is normal).
 
-## 7. Start the five jobs (one terminal each)
+## 7. Start the five jobs
+
+**Supervised (recommended):** one command, no terminals, and a job that gets killed is restarted from its checkpoint.
+
+```bash
+scripts/jobs.sh start            # one job every 20 s, so the JVMs do not start together
+scripts/jobs.sh status           # after a minute: all five "up", OOMKILLED false
+scripts/jobs.sh logs bronze      # follow one job (Ctrl+C leaves it running)
+scripts/jobs.sh stop             # clean stop (SIGTERM), supervisors included
+```
+
+**By hand (one terminal each):** the same commands the script runs.
 
 ```bash
 docker exec -it marineflow-spark-bronze /opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.ui.prometheus.enabled=true --conf spark.sql.streaming.metricsEnabled=true --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --conf spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2 --conf spark.hadoop.mapreduce.fileoutputcommitter.cleanup.skipped=true --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/bronze_positions.py
@@ -217,6 +238,6 @@ Some gold tables (dark events, speed anomalies, loitering, risk score) legitimat
 | `bq query` on a Silver table fails on a column name | Step 5 was skipped: the external tables still have the old schema |
 | The DAG run ends after the first task with everything skipped | Silver has no file from the last two hours. Check the Silver jobs and the producer |
 | Grafana panels are empty | The stack was up less than a minute, or the job was not started with `spark.sql.streaming.metricsEnabled=true` |
-| A job's driver process is just gone (no java process in `docker exec <container> ps aux`, "Spark jobs up" flickers below 4/4) | Likely OOM-killed: check `docker inspect <container> --format '{{.State.OOMKilled}}'`. Five 1 GB Spark drivers plus Kafka, Airflow, Grafana and Prometheus is heavy for Docker Desktop's default VM memory (often ~8 GB). Raise the VM's memory limit (Docker Desktop → Settings → Resources), or don't run all five jobs at once. Restart the affected job by hand; nothing supervises these processes |
+| A job's driver process is just gone (no java process in `docker exec <container> ps aux`, "Spark jobs up" flickers below 4/4) | Likely OOM-killed: check `docker inspect <container> --format '{{.State.OOMKilled}}'`. Five 1 GB Spark drivers plus Kafka, Airflow, Grafana and Prometheus is heavy for Docker Desktop's default VM memory (often ~8 GB). Raise the VM's memory limit (Docker Desktop → Settings → Resources), or don't run all five jobs at once. Use `scripts/jobs.sh start`, which restarts a killed job by itself (`scripts/jobs.sh status` shows the restarts); with hand-started jobs nothing supervises them |
 | A job's very first batch after a restart is far slower than 30 s | Expected: it is catching up on everything the topic buffered while the job was down. Later batches return to normal once it clears the backlog |
 | *Live traffic* map is empty | `vessel-positions-bronze` is empty: Bronze is not running or the producer is not connected |
