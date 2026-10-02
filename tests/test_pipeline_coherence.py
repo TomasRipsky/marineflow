@@ -136,3 +136,17 @@ class SparkImageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExternalTableUriTest(unittest.TestCase):
+    """Spark's committer writes task files under <table>/_temporary/... for a few seconds per batch; an external
+    table whose pattern is a bare '/*' reads them and the whole query fails on mismatched hive partition keys."""
+
+    def test_external_tables_never_read_the_committer_temp_directory(self):
+        tf = (ROOT / "infra/terraform/modules/bigquery/main.tf").read_text()
+        uris = re.findall(r'source_uris\s+=\s+\["([^"]+)"\]', tf)
+        self.assertEqual(len(uris), 4)
+        for uri in uris:
+            with self.subTest(uri=uri):
+                self.assertTrue(uri.endswith("/partition_date=*"), uri)
+

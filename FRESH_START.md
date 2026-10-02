@@ -107,11 +107,11 @@ docker exec marineflow-airflow-scheduler airflow dags delete marineflow_pipeline
 
 ## 5. Apply pending infrastructure changes
 
-The Silver external tables were changed (`port_name` and `port_country` replaced the old port columns, and one always-null metadata column was removed). If you have not applied that yet, do it now, **before** the Silver jobs write the new files:
+The Silver external tables were changed (`port_name` and `port_country` replaced the old port columns, and one always-null metadata column was removed). The four external tables also changed their `source_uris` from `.../*` to `.../partition_date=*`, so BigQuery stops reading Spark's transient `_temporary/` files (without that, a dbt task that runs during a micro-batch commit fails with `Partition keys should be invariant`; the retry then passes). If you have not applied that yet, do it now, **before** the Silver jobs write the new files:
 
 ```bash
 cd infra/terraform
-terraform plan          # read it: only the two Silver external tables should change
+terraform plan          # read it: the four external tables change in place (source_uris now end in partition_date=*); a few bronze/silver/checkpoints .keep objects may be created
 terraform apply         # after reviewing the plan
 cd ../..
 ```

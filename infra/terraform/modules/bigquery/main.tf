@@ -46,6 +46,17 @@ resource "google_bigquery_dataset" "gold" {
 }
 
 # -----------------------------------------------------------------------------
+# Why every source_uris ends in partition_date=* and not in /*
+#
+# Spark writes through the Hadoop FileOutputCommitter, which first puts each
+# task's files under <table>/_temporary/0/_temporary/attempt_*/partition_date=*/
+# and moves them to the final path when the task commits (a few seconds later,
+# every 30 s micro-batch). A bare /* pattern matches those transient files too,
+# and BigQuery fails the whole query with "Partition keys should be invariant
+# from table creation ..." (seen in the Airflow dbt tasks; the retry passed).
+# Starting the pattern at partition_date= leaves _temporary/ and _SUCCESS out.
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # External Table Bronze: vessel_positions_raw
 #
 # Reads directly from GCS Parquet — no data copy into BigQuery.
@@ -66,7 +77,7 @@ resource "google_bigquery_table" "vessel_positions_raw" {
   external_data_configuration {
     source_format    = "PARQUET"
     autodetect       = false
-    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_positions/*"]
+    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_positions/partition_date=*"]
 
     hive_partitioning_options {
       mode                     = "AUTO"
@@ -131,7 +142,7 @@ resource "google_bigquery_table" "vessel_metadata_raw" {
   external_data_configuration {
     source_format    = "PARQUET"
     autodetect       = false
-    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_metadata/*"]
+    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/bronze/vessel_metadata/partition_date=*"]
 
     hive_partitioning_options {
       mode                     = "AUTO"
@@ -180,7 +191,7 @@ resource "google_bigquery_table" "vessel_positions_clean" {
   external_data_configuration {
     source_format    = "PARQUET"
     autodetect       = false
-    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/silver/vessel_positions/*"]
+    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/silver/vessel_positions/partition_date=*"]
 
     hive_partitioning_options {
       mode                     = "AUTO"
@@ -243,7 +254,7 @@ resource "google_bigquery_table" "vessel_metadata" {
   external_data_configuration {
     source_format    = "PARQUET"
     autodetect       = false
-    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/silver/vessel_metadata/*"]
+    source_uris      = ["gs://${var.gcs_bucket}-${var.project_id}/silver/vessel_metadata/partition_date=*"]
 
     hive_partitioning_options {
       mode                     = "AUTO"
