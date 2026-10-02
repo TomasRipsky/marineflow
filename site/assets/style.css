@@ -160,6 +160,8 @@ tr:hover td { background: rgba(56, 212, 255, .04); }
 @media (max-width: 900px) { .gallery { grid-template-columns: 1fr; } }
 .shot { margin: 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--abyss); }
 .shot img { display: block; width: 100%; height: auto; }
+.shot img.zoomable { cursor: zoom-in; transition: filter .2s; }
+.shot img.zoomable:hover, .shot img.zoomable:focus-visible { filter: brightness(1.12); outline: 2px solid var(--cyan); outline-offset: -2px; }
 .shot figcaption { padding: .7rem 1rem; font-size: .88rem; color: var(--mist); border-top: 1px solid var(--line); }
 .shot figcaption b { color: var(--foam); }
 .shot .pending { aspect-ratio: 16 / 9; display: grid; place-content: center; text-align: center; gap: .4rem; color: var(--mist); font: .84rem var(--mono); background:
@@ -178,6 +180,17 @@ tr:hover td { background: rgba(56, 212, 255, .04); }
 
 footer { border-top: 1px solid var(--line); color: var(--mist); font-size: .82rem; }
 footer .wrap { padding: 1.6rem 1.25rem; display: flex; flex-wrap: wrap; justify-content: space-between; gap: .6rem; }
+
+/* lightbox: the screenshot at the width of the window; "full" shows it 1:1 and scrolls */
+.lightbox { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .6rem; padding: 1rem; background: rgba(2, 10, 20, .94); backdrop-filter: blur(6px); }
+.lightbox[hidden] { display: none; }
+.lb-scroll { overflow: auto; max-width: 100%; max-height: calc(100vh - 5rem); border: 1px solid var(--line); border-radius: 10px; background: #020a14; touch-action: pan-x pan-y pinch-zoom; }
+.lb-scroll img { display: block; width: min(1600px, calc(100vw - 2.2rem)); max-width: none; height: auto; cursor: zoom-in; }
+.lightbox.full .lb-scroll img { width: 1600px; cursor: zoom-out; }
+.lb-close { position: absolute; top: .8rem; right: 1rem; width: 2.6rem; height: 2.6rem; border-radius: 50%; border: 1px solid var(--line); background: var(--navy); color: var(--foam); font: 400 1.7rem/1 var(--sans); cursor: pointer; z-index: 1; }
+.lb-close:hover, .lb-close:focus-visible { background: var(--cyan); color: var(--abyss); outline: none; }
+.lb-hint { margin: 0; font-size: .82rem; color: var(--mist); text-align: center; }
+html.lb-open { overflow: hidden; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

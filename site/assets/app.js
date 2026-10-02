@@ -161,6 +161,30 @@
       "<p class='verdict'>Several explanations fit: two transmitters sharing one MMSI, a corrupted position report, or deliberate spoofing." + hint + " The detector cannot tell them apart from the data alone, and a single row like this raises a vessel's risk score: the score is a lead to check, not a verdict.</p>";
   })();
 
+  /* lightbox: click a screenshot to read it at full size; click it again for 1:1, Esc / backdrop / X to close ---- */
+  var lightbox = (function () {
+    var box = el("div", "lightbox", "<button class='lb-close' type='button' aria-label='Close the enlarged screenshot'>&times;</button>" +
+      "<div class='lb-scroll'><img alt=''></div><p class='lb-hint'></p>");
+    box.setAttribute("role", "dialog"); box.setAttribute("aria-modal", "true"); box.hidden = true;
+    document.body.appendChild(box);
+    var img = box.querySelector("img"), hint = box.querySelector(".lb-hint"), closeBtn = box.querySelector(".lb-close"), opener = null;
+    var setHint = function () { hint.textContent = img.alt + " · " + (box.classList.contains("full") ? "click the image to fit the window" : "click the image for full size") + " · Esc to close"; };
+    function close() {
+      box.hidden = true; box.classList.remove("full"); document.documentElement.classList.remove("lb-open");
+      if (opener) opener.focus();
+    }
+    function open(source, title) {
+      opener = source; img.src = source.currentSrc || source.src; img.alt = title;
+      box.setAttribute("aria-label", title); box.classList.remove("full"); setHint();
+      box.hidden = false; document.documentElement.classList.add("lb-open"); box.querySelector(".lb-scroll").scrollTop = 0; closeBtn.focus();
+    }
+    closeBtn.addEventListener("click", close);
+    box.addEventListener("click", function (e) { if (e.target === box || e.target.classList.contains("lb-scroll")) close(); });
+    img.addEventListener("click", function () { box.classList.toggle("full"); setHint(); });
+    document.addEventListener("keydown", function (e) { if (!box.hidden && e.key === "Escape") close(); });
+    return { open: open };
+  })();
+
   /* gallery: real screenshots when the file exists, an honest placeholder when not */
   (function gallery() {
     var shots = [
@@ -179,7 +203,13 @@
       img.alt = "Screenshot of the " + s[1] + " view"; img.loading = "eager"; img.decoding = "async";
       img.style.display = "none";
       var pending = el("div", "pending", "<b>Screenshot pending</b><span>assets/shots/" + s[0] + ".png</span>");
-      img.onload = function () { pending.remove(); img.style.display = ""; };
+      img.onload = function () {
+        pending.remove(); img.style.display = "";
+        img.classList.add("zoomable"); img.tabIndex = 0; img.setAttribute("role", "button"); img.setAttribute("aria-label", "Enlarge the " + s[1] + " screenshot");
+        var enlarge = function () { lightbox.open(img, s[1] + " screenshot"); };
+        img.addEventListener("click", enlarge);
+        img.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); enlarge(); } });
+      };
       img.onerror = function () { pending.innerHTML = "<b>Screenshot not available</b><span>assets/shots/" + s[0] + ".png could not be loaded</span>"; };
       fig.appendChild(pending); fig.appendChild(img); fig.appendChild(cap);
       img.src = "assets/shots/" + s[0] + ".png?v=__VERSION__";
