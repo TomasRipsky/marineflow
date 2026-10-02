@@ -155,7 +155,7 @@
   <g class="ops"><rect class="box" x="40" y="608" width="270" height="70" rx="9"/>
     <text class="h c" x="175" y="636">Prometheus + Grafana</text><text class="s c" x="175" y="656">Spark streaming metrics · Kafka lag</text></g>
   <g class="ops"><rect class="box" x="335" y="608" width="290" height="70" rx="9"/>
-    <text class="h c" x="480" y="636">102 unit tests + 3 Spark smoke tests</text><text class="s c" x="480" y="656">mappings · hot path · compaction · wiring</text></g>
+    <text class="h c" x="480" y="636">103 unit tests + 3 Spark smoke tests</text><text class="s c" x="480" y="656">mappings · hot path · compaction · wiring</text></g>
   <g class="ops"><rect class="box" x="650" y="608" width="240" height="70" rx="9"/>
     <text class="h c" x="770" y="636">GitHub Actions CI</text><text class="s c" x="770" y="656">compile · tests · dbt parse</text></g>
   <g class="ops"><rect class="box" x="915" y="608" width="245" height="70" rx="9"/>

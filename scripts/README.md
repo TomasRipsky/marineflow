@@ -29,10 +29,10 @@ Optional environment variables, written before the command:
 |---|---|---|
 | `STAGGER` | `20` | Seconds between job starts. Five JVMs starting together spike memory and CPU |
 | `RESTART_DELAY` | `15` | Seconds before a dead job is restarted |
-| `DRIVER_MEMORY` | `1g` | `--driver-memory` for the jobs you start |
+| `DRIVER_MEMORY` | `512m` for `bronze-metadata` and `silver-metadata`, `1g` for the other three | `--driver-memory` for every job you start; when set it applies to all of them |
 
 ```bash
-DRIVER_MEMORY=512m scripts/jobs.sh start bronze-metadata silver-metadata
+DRIVER_MEMORY=2g scripts/jobs.sh start silver-positions      # give one job more room
 ```
 
 ### Reading `status`

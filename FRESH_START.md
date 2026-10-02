@@ -10,7 +10,7 @@ Everything runs inside Docker Desktop's single VM. Measured with `docker stats` 
 2. Check it took effect: `docker info --format '{{.MemTotal}}'` should print about 12 000 000 000.
 3. Prefer `scripts/jobs.sh` over five terminals in step 7: it starts the jobs one at a time (five JVMs starting together spike memory) and restarts any job that is killed, so a kill costs 15 seconds instead of a dead series. `scripts/jobs.sh status` shows memory per job, OOM kills and restarts.
 
-If it still dies, lower the load rather than raising it further: the two metadata jobs handle about one message per second, so `DRIVER_MEMORY=512m scripts/jobs.sh start bronze-metadata silver-metadata` is worth trying (watch `status`; if a job restarts repeatedly, give it back 1g).
+If it still dies, lower the load rather than raising it further: the two metadata jobs handle about one message per second, so `scripts/jobs.sh` already starts them with `--driver-memory 512m` (measured: about 1.1 GiB per container instead of 1.6 GiB, with no restarts in an hour of live data). If one restarts repeatedly, give it back 1g with `DRIVER_MEMORY=1g scripts/jobs.sh start <job>`.
 
 Every command is meant to be run from the repository root, in this order. Steps 1 to 4 destroy; steps 5 to 9 rebuild and check.
 

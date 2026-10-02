@@ -16,13 +16,20 @@
 # Environment (all optional):
 #   STAGGER=20          seconds between job starts (five JVMs starting together spike memory and CPU)
 #   RESTART_DELAY=15    seconds before a dead job is restarted
-#   DRIVER_MEMORY=1g    --driver-memory for every job
+#   DRIVER_MEMORY       --driver-memory for every job you start. Default: 512m for the two metadata jobs (about one
+#                       message per second; measured about 1.1 GiB per container against 1.6 GiB at 1g, with no
+#                       restarts in an hour) and 1g for the other three
 #   CONTAINER_PREFIX    container name prefix (default marineflow-spark; only the tests change it)
 set -euo pipefail
 
 STAGGER="${STAGGER:-20}"
 RESTART_DELAY="${RESTART_DELAY:-15}"
-DRIVER_MEMORY="${DRIVER_MEMORY:-1g}"
+
+# Memory of one job's driver: DRIVER_MEMORY wins, otherwise 512m for the low-volume metadata jobs and 1g for the rest.
+memory_of() {
+  if [ -n "${DRIVER_MEMORY:-}" ]; then echo "$DRIVER_MEMORY"; return; fi
+  case "$1" in bronze-metadata|silver-metadata) echo 512m ;; *) echo 1g ;; esac
+}
 LOG=/tmp/job.log
 
 ALL_JOBS=(bronze bronze-metadata silver-positions silver-metadata hot-alerts)
@@ -42,8 +49,8 @@ script_of() {
 
 # The exact flags of the README / FRESH_START.md templates. hot-alerts is Kafka to Kafka: no GCS jars.
 submit_cmd() {
-  local script="$1" common
-  common="/opt/spark/bin/spark-submit --master local[2] --driver-memory $DRIVER_MEMORY --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0"
+  local script="$1" memory="$2" common
+  common="/opt/spark/bin/spark-submit --master local[2] --driver-memory $memory --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0"
   if [ "$script" = hot_alerts.py ]; then
     echo "$common /opt/spark/processing/spark_streaming/$script"
   else
@@ -76,7 +83,7 @@ start_job() {
   if job_alive "$job"; then
     echo "  $job: a spark-submit started by hand is running; stop it (Ctrl+C) before using this script" >&2; return 1
   fi
-  cmd="$(submit_cmd "$script")"
+  cmd="$(submit_cmd "$script" "$(memory_of "$job")")"
   docker exec -d "$c" sh -c "# $(marker "$job")
 echo \"--- supervisor started \$(date -u +%FT%TZ)\" >> $LOG
 while true; do

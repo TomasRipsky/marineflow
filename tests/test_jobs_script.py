@@ -36,9 +36,16 @@ class JobsScriptTest(unittest.TestCase):
     def test_gcs_jobs_use_the_flags_of_the_readme_template(self):
         template = re.search(r"docker exec -it marineflow-spark-bronze (/opt/spark/bin/spark-submit [^\n]+)", README).group(1)
         # the script substitutes the driver memory; the README template spells it out
-        in_script = flags(TEXT.replace("$DRIVER_MEMORY", "1g"))
+        in_script = flags(TEXT.replace("$memory", "1g"))
         self.assertTrue(flags(template) <= in_script, flags(template) - in_script)
         self.assertIn("spark.sql.streaming.metricsEnabled=true", TEXT)
+
+    def test_metadata_jobs_default_to_a_smaller_driver_than_the_positions_jobs(self):
+        """Measured live: 512m cuts the two low-volume metadata containers from about 1.6 to 1.1 GiB, which was the margin
+        that kept a 10.7 GiB Docker VM from the OOM killer."""
+        body = TEXT.split("memory_of() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("bronze-metadata|silver-metadata) echo 512m", body)
+        self.assertIn("*) echo 1g", body)
 
     def test_hot_alerts_gets_no_gcs_jars(self):
         hot = TEXT.split('if [ "$script" = hot_alerts.py ]; then', 1)[1].split("else", 1)[0]
