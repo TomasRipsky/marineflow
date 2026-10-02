@@ -6,7 +6,9 @@
 # batch/cold path in dbt (vessel_dark_events.sql, vessel_speed_anomalies.sql).
 # Those remain the authoritative, richer analytics (geospatial displacement,
 # port-zone context, graduated severity). This job exists purely for early warning
-# with sub-minute latency on the two signals where that actually matters.
+# with latency of seconds on the two signals where that actually matters: speed
+# and silence. It emits four alert types: IMPOSSIBLE_SPEED, GPS_SPOOFING and
+# SUDDEN_ACCELERATION (speed) and AIS_GAP (silence).
 #
 # Source:  Kafka topic vessel-positions-bronze (flattened, Bronze output)
 # Sink:    Kafka topic vessel-alerts (JSON) — no GCS write, this is
@@ -22,13 +24,21 @@
 #     unlike dbt which has per-type limits. Simplification, not a bug.
 #   - AIS GAP: ProcessingTimeTimeout of 120 min per vessel (same threshold
 #     as vessel_dark_events.sql's MEDIUM tier). Fires when that timeout
-#     expires, without waiting for the vessel to reappear — dbt only detects gaps retroactively when the vessel
-#     reappears, so this is a genuine capability the batch layer doesn't
-#     have, not just a faster version of the same thing. No displacement/
-#     severity grading here (that needs the reappearance point) — dbt still
-#     owns the full graduated CRITICAL/HIGH/MEDIUM classification.
+#     expires, without waiting for the vessel to reappear. dbt only detects
+#     gaps retroactively, when the vessel reappears, so this is a genuine
+#     capability the batch layer doesn't have, not just a faster version of
+#     the same thing. No displacement/severity grading here (that needs the
+#     reappearance point) — dbt still owns the full graduated
+#     CRITICAL/HIGH/MEDIUM classification.
 #
-# Run:
+# Delivery is at-least-once: a job killed between a batch's output and its
+# checkpoint replays that batch, so an alert can be raised twice
+# (docs/plans/at-least-once-duplicates.md).
+#
+# Normally started with scripts/jobs.sh (see scripts/README.md), which also
+# restarts it after a kill.
+#
+# Run by hand:
 #   spark-submit \
 #     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
 #     hot_alerts.py
