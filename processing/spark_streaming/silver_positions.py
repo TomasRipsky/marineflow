@@ -32,7 +32,12 @@
 #   vessel_type_normalized — from ShipStaticData, joined in Gold via dbt
 #   destination_clean      — from ShipStaticData, joined in Gold via dbt
 #
-# Run:
+# Normally started with scripts/jobs.sh (see scripts/README.md), which also restarts it
+# after a kill and passes every flag below. Delivery is at-least-once: a job killed
+# between a batch's write and its checkpoint replays that batch
+# (docs/plans/at-least-once-duplicates.md).
+#
+# Run by hand:
 #   spark-submit \
 #     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
 #     --jars jars/gcs-connector-hadoop3-latest.jar \

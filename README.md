@@ -24,7 +24,7 @@
 | **Orchestration** | 1 Airflow DAG, hourly, 9 tasks |
 | **Quality** | **107 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
 | **Infrastructure** | Terraform (3 modules wired in: IAM, GCS, BigQuery), 14 Docker Compose services |
-| **Reference data** | 65 MID codes → 35 flag states · 79 AIS ship-type codes → 11 categories · 13 navigation statuses · 15 port zones · 11 ocean boxes → 7 regions |
+| **Reference data** | 65 MID codes → 35 flag states · 79 AIS ship-type codes → 11 categories · 13 navigation statuses · 15 port zones · 11 ocean boxes → 7 regions (plus `open_ocean` for anything outside them) |
 
 ## Table of contents
 
@@ -43,6 +43,18 @@
 13. [Project structure](#13-project-structure)
 14. [Known limitations](#14-known-limitations)
 
+### Where to read what
+
+| You want to… | Read |
+|---|---|
+| understand the project | this README |
+| wipe everything and run it again, with a check per layer | [FRESH_START.md](FRESH_START.md) |
+| run, stop and watch the five Spark jobs | [scripts/README.md](scripts/README.md) |
+| see the project as a page, with real numbers and screenshots | the [project site](https://tomasripsky.github.io/marineflow/) |
+| know how the repository is worked on and how its documentation is kept true | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| follow the open problem (replayed batches leave duplicates) | [docs/plans/at-least-once-duplicates.md](docs/plans/at-least-once-duplicates.md) |
+| refresh the site's screenshots | [site/assets/shots/README.md](site/assets/shots/README.md) |
+
 ---
 
 ## 1. Overview
@@ -55,7 +67,7 @@ AIS (Automatic Identification System) is how ships broadcast their identity, pos
 | **Latency** | Seconds (30-second micro-batches) | Hourly |
 | **Engine** | Spark, per-vessel state | Spark → GCS → BigQuery → dbt |
 | **Output** | Kafka topic `vessel-alerts` | Gold tables in BigQuery |
-| **Depth** | Two simple rules, one global speed limit | Vessel-type limits, geospatial distance, graded severity, 30-day scoring |
+| **Depth** | Four simple rules, one global speed limit | Vessel-type limits, geospatial distance, graded severity, 30-day scoring |
 
 They are two consumers of the same Kafka topic, not two pipelines. Each has a job the other cannot do well: a per-vessel timeout fires the moment a vessel goes silent, while the analytics need the full history, joins and tests.
 
@@ -109,7 +121,7 @@ Bronze does no business logic. It parses the JSON against a fixed schema, keeps 
 | **Flag state** | From the MMSI's first three digits (MID): 65 codes → 35 countries, one shared table (`reference_data.py`) |
 | **Ship type** | 79 AIS codes → `cargo`, `tanker`, `passenger`, `fishing`, `tug`, `special_craft`, `sailing_or_pleasure`, `high_speed_craft`, `wing_in_ground`, `other`, `unknown` |
 | **Navigation status** | 13 codes → labels such as `at_anchor`, `moored`, `under_way_engine` (reserved codes become `unknown_<n>`) |
-| **Geography** | 11 bounding boxes → 7 ocean regions (first match wins); 15 major-port zones → `port_name`, `port_country`, `is_in_port_zone` |
+| **Geography** | 11 bounding boxes → 7 ocean regions (first match wins; `open_ocean` when no box matches); 15 major-port zones → `port_name`, `port_country`, `is_in_port_zone` |
 | **Movement** | Speed and heading change against the vessel's previous message |
 
 These lookups are deliberately coarse; see [Known limitations](#14-known-limitations).
@@ -220,13 +232,24 @@ flowchart LR
     risk --> test
 ```
 
-dbt runs inside the scheduler container (`dbt-bigquery 1.8.2` is baked into `orchestration/Dockerfile`) with `--target prod`. Compaction of small Silver files is **not** part of the DAG; see [Silver compaction](#silver-compaction).
+dbt runs inside the scheduler container (`dbt-bigquery 1.8.2` is baked into `orchestration/Dockerfile`, and `transformation/dbt` is mounted into it) with `--target prod`. Compaction of small Silver files is **not** part of the DAG; see [Silver compaction](#silver-compaction).
+
+To work on the models from the host (virtual environment, Python 3.11):
+
+```bash
+cd transformation/dbt
+../../venv/bin/dbt parse   --profiles-dir .                       # no credentials: what CI does
+../../venv/bin/dbt compile --select vessel_speed_anomalies --profiles-dir .   # reads BigQuery metadata only
+../../venv/bin/dbt run     --select vessel_speed_anomalies --profiles-dir .   # WRITES to the real gold dataset
+```
+
+`dev` and `prod` point at the same dataset, so a local `dbt run` overwrites what Airflow produced; prefer `parse` and `compile`, and run the compiled SQL read-only when you want to see what a model would return.
 
 ---
 
 ## 6. Getting started
 
-**Prerequisites:** Docker with Compose v2, Python 3.11, the `gcloud` CLI, Terraform ≥ 1.6, a GCP project and a free [aisstream.io](https://aisstream.io) API key.
+**Prerequisites:** Docker with Compose v2 and **11 to 12 GiB of memory given to Docker Desktop** (its default, 7.75 GiB, is too small for the five jobs plus Kafka, Airflow and Grafana; see [FRESH_START.md](FRESH_START.md)), Python 3.11, the `gcloud` CLI, Terraform ≥ 1.6, a GCP project and a free [aisstream.io](https://aisstream.io) API key. Node 22+ and Google Chrome are only needed to regenerate the site's screenshots.
 
 ### 1. Environment
 
@@ -272,7 +295,7 @@ docker compose up postgres airflow-init airflow-webserver airflow-scheduler -d -
 docker compose up kafka-exporter prometheus grafana -d --build
 ```
 
-The Spark containers only run `sleep infinity`: the jobs are started by hand in the next step. All five share one image (`marineflow-spark:3.5.0`); rebuild it with `--build` and recreate the containers whenever `processing/spark_streaming/requirements.txt` changes.
+The Spark containers only run `sleep infinity`: the jobs are started in the next step, with `scripts/jobs.sh` or by hand. All five share one image (`marineflow-spark:3.5.0`); rebuild it with `--build` and recreate the containers whenever `processing/spark_streaming/requirements.txt` changes.
 
 ### 4. Start the jobs
 
@@ -317,7 +340,10 @@ cd ingestion/ais_producer && python main.py
 docker exec marineflow-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic vessel-positions-bronze --from-beginning --max-messages 5
 docker exec marineflow-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic vessel-alerts --from-beginning --max-messages 5
 bq query --use_legacy_sql=false 'SELECT COUNT(*) FROM `<project>.marineflow_silver.vessel_positions_clean`'
+scripts/jobs.sh status        # five jobs up, OOMKILLED false, producer running
 ```
+
+Then open Grafana (*MarineFlow: Overview* is the home page) and, once Silver has a file from the last two hours, trigger the DAG in Airflow.
 
 ### Ports
 
@@ -393,6 +419,8 @@ docker run --rm --entrypoint /bin/sh \
   marineflow-spark:3.5.0 -c "/opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --conf spark.hadoop.fs.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem --conf spark.hadoop.fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS --conf spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT --jars /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar --driver-class-path /opt/spark/processing/jars/gcs-connector-hadoop3-latest.jar /opt/spark/processing/spark_streaming/compact_silver.py --dry-run"
 ```
 
+It starts one more Spark JVM (about 1 GiB). With the whole stack running on a 10.7 GiB Docker VM that is close to the limit: run it when the jobs are stopped, or check `scripts/jobs.sh status` first.
+
 Always start with `--dry-run`, which writes and verifies the result and then discards it. Drop the flag to apply it; add `--date YYYY-MM-DD` for another day or `--dataset vessel_positions` for one dataset.
 
 ```mermaid
@@ -433,7 +461,7 @@ Why it is built this way: object stores have no atomic rename, and the previous 
 | **Kafka** | Brokers, topics, partitions, messages per second, messages retained, balance across partitions and a topic inventory table | Prometheus |
 
 - The Kafka datasource is the `hamedkarbasi93-kafka-datasource` plugin, installed at startup. It reads the last messages of `vessel-positions-bronze` and `vessel-alerts` through the internal listener (`kafka:29092`), so the map shows what the pipeline just processed.
-- There is **no consumer-group lag panel**: Spark does not commit offsets to Kafka, so `kafka-exporter` has nothing to report. The Kafka dashboard compares the raw and Bronze topics instead (the gap between them is the rejection rate).
+- There is **no consumer-group lag panel**: Spark does not commit offsets to Kafka, so `kafka-exporter` has nothing to report. The Kafka dashboard compares the raw and Bronze topics instead. The *Bronze gap* tile on the Overview dashboard is the share by which Bronze's write rate trails the raw topic's; in practice it means Bronze is behind or was down, not that `validate()` dropped records (in a sample of 3,000 raw messages none failed validation).
 - The rate and latency series only exist for jobs started with `--conf spark.sql.streaming.metricsEnabled=true`.
 - **Reading the charts: the rates look like a sawtooth, and that is real.** Measured by reading the Kafka offsets every 5 seconds for 100 s:
   - `vessel-positions-bronze` grew by 2,694, 0, 0, 3,258, 0, 2,360, 0, 2,930, 0, 0, 0, 2,760 messages per 5-second interval. Bronze writes once per 30-second micro-batch (about 2,500 to 3,300 messages in one go) and nothing in between, so a one-minute `rate()` over it draws teeth.
@@ -442,6 +470,8 @@ Why it is built this way: object stores have no atomic rename, and the previous 
   - A real anomaly looks different: a single tooth that is much taller or wider than the rest. One was seen at 16:34:45 UTC, a 40-second batch (above the 30-second trigger) followed by a catch-up burst.
   - If you want smoother lines, use a longer window in the throughput panels (`[3m]` instead of `[1m]`); the average is the same, only the teeth soften. They are left as they are on purpose: they are what the system does.
 - **Hot Alerts has no Prometheus target**; its output is visible on the Live traffic dashboard and on `vessel-alerts`.
+- The per-topic panels exclude Kafka's own `__consumer_offsets` topic (50 partitions that would otherwise inflate topics, partitions and retained messages); a test enforces it.
+- The dashboards' screenshots on the site are produced by `node site/tools/capture_shots.mjs`, which blurs the MMSI column of the alerts table before capturing.
 
 ---
 
@@ -473,12 +503,12 @@ flowchart LR
 
 | Layer | What it checks | Where it runs |
 |---|---|---|
-| **Unit tests** (`tests/`) | Reference mappings across layers; AIS "not available" handling; hot path logic including timeouts; compaction commit and crash recovery; that the DAG runs every gold model; that Compose passes the variables the jobs read; that Terraform external tables match what the jobs write | Local, CI |
+| **Unit tests** (`tests/`) | Reference mappings across layers; AIS "not available" handling; hot path logic including timeouts; compaction commit and crash recovery; that the DAG runs every gold model; that Compose passes the variables the jobs read; that Terraform external tables match what the jobs write (columns, partition columns, no `_temporary/` reads); that incremental models survive an empty table; that the Grafana JSON matches its generator and queries only real topics and jobs; that `scripts/jobs.sh` uses the README's Spark flags; that the numbers in this README and on the site are the repository's | Local, CI |
 | **Smoke tests** (`tests/smoke/`) | The hot path on real Spark (pinned pandas/pyarrow, Python 3.8); the compaction on real Parquet: normal run, late file, crash and recovery, dry run, size-based split; the Silver transformation on hand-made rows: ports, flags, ocean regions, "not available" values, navigation labels | Local, in the Spark image |
 | **dbt parse** | The project compiles with `dbt-bigquery 1.8.2`, without credentials | CI |
 | **dbt data tests** | 104 tests on the gold models and the Silver sources | After each hourly run |
 
-CI (`.github/workflows/ci.yml`) runs on every push to any branch and can be started by hand from the Actions tab. It has two jobs: *Python tests* (byte-compile, then the unit tests on Python 3.11 with the same pandas and numpy as the Spark image) and *dbt parse*.
+CI (`.github/workflows/ci.yml`) runs on every push to any branch and can be started by hand from the Actions tab. It has two jobs: *Python tests* (byte-compile, a syntax check of the Node screenshot script, then the unit tests on Python 3.11 with the same pandas and numpy as the Spark image) and *dbt parse*. A second workflow, `pages.yml`, publishes `site/` to GitHub Pages on pushes to `main` that touch it.
 
 ```bash
 pip install -r requirements-dev.txt
@@ -507,6 +537,15 @@ Testing found real problems. These are the ones worth remembering, and how each 
 | A "possible ship-to-ship transfer" flag could never be true | Tracing where its inputs come from | Removed, and documented |
 | Columns called `nearest_port`, `eez_country` and `crossed_eez_during_gap` did not mean what their names said (a port *zone*, that port's country, a port-to-port gap) | Reading how each is computed | Renamed `port_name`, `port_country`, `reappeared_in_other_port` |
 | A Terraform column the job never wrote; a connection test that disabled TLS verification | Schema alignment test; code review | Removed; test now mirrors the producer |
+| Five gold models failed at once with `Name nearest_port not found`: dbt never rebuilds a view that is only referenced, so a renamed Silver column left a stale staging view | The first end-to-end run | A `dbt_staging` task before every model |
+| A dbt task failed once and passed on retry with `Partition keys should be invariant`: Spark parks each task's files under `_temporary/` for a few seconds and the external tables matched `/*` | The Airflow log of the first DAG runs; reproduced 2 of 9 queries on the live bucket | Source URIs end in `partition_date=*` (0 of 9 after) |
+| `terraform apply` failed with `schemas must be the same`: BigQuery adds the hive partition columns to the table schema and the provider sends it on every update | The apply itself | The four external schemas declare `partition_date` / `partition_hour`; a test ties them to each writer's `partitionBy` |
+| The gold detector tables stayed empty after a green run (0 speed anomalies in 390,000 positions): `max(...)` over an empty incremental table is NULL and `x >= NULL` keeps no row | Running the model's SQL by hand found 938 | `coalesce` fallback in three models, and a test |
+| Bronze wrote exactly 33.3 messages a second against a feed of about 95; BigQuery was 15 minutes stale | The topic offsets: the cap was 1000 rows per 30-second batch, and an explicit value in `.env` overrode the code's default | 4000 by default, a section on sizing it, and a test that keeps the defaults equal |
+| Spark jobs were killed one by one (`OOMKilled`) and nothing restarted them | `docker inspect`; 673 MiB left in the VM | `scripts/jobs.sh` (supervision, staggered start, 512m for the metadata jobs) and the 11–12 GiB memory advice |
+| A tile called *Bronze rejects* showed 56–80% | A sample of 3,000 raw messages: none failed validation. The Bronze job was being killed | Renamed *Bronze gap* and described as a lag symptom |
+| Topics showed 7 and partitions 66 | The internal `__consumer_offsets` topic leaked into unfiltered queries | Every cluster-wide query excludes it; a test |
+| A job killed between a batch's write and its checkpoint replayed the batch: 999 duplicate positions | Comparing counts: Bronze held 999 more rows than the input | Open, with a plan: [docs/plans/at-least-once-duplicates.md](docs/plans/at-least-once-duplicates.md) |
 
 ---
 
@@ -518,6 +557,9 @@ Testing found real problems. These are the ones worth remembering, and how each 
 - **Bronze never transforms.** Field names and values stay as received, so any downstream mistake can be replayed.
 - **Coherence over cleverness.** Lookups that appear in more than one place live in one place, and tests fail when the layers disagree.
 - **Errors are raised, not swallowed.** The compaction, the diagnostics and the CLI exit non-zero and say why.
+- **Dashboards, screenshots and the site are generated, and checked.** The Grafana JSON comes from one script, the site's numbers from BigQuery queries, its screenshots from a script that blurs vessel identifiers; tests fail when a committed file drifts from its generator.
+- **Supervision is a shell loop on purpose.** A killed job is restarted from its checkpoint by `scripts/jobs.sh`, which is enough for one laptop and honest about not being an orchestrator.
+- **Say what a chart is, not what it looks like.** A tile named after a cause it cannot measure (*Bronze rejects*) was renamed to what it measures; the sawtooth of the rate charts is documented, not smoothed away.
 - **Local by default.** Kafka, Spark and Airflow run in Docker; only storage and the warehouse are cloud. A VM would add cost and no learning for a project that lives on one laptop.
 
 ---
@@ -546,12 +588,22 @@ marineflow/
 │   ├── Dockerfile                 # Airflow + dbt-bigquery 1.8.2
 │   └── dags/marineflow_pipeline.py
 ├── infra/terraform/               # modules: iam, gcs, bigquery (applied), compute (not wired)
-├── monitoring/                    # Prometheus config, Grafana provisioning, dashboard generator
+├── monitoring/                    # Prometheus config, Grafana provisioning, dashboards generated by generate_dashboards.py
+├── scripts/
+│   ├── jobs.sh                    # start, stop, watch and restart the five Spark jobs
+│   └── README.md
 ├── tests/                         # unit tests and smoke/ (real Spark)
-├── docs/img/                      # the diagrams in this README
-├── site/                          # the project site (GitHub Pages), data read from BigQuery
-├── .github/workflows/ci.yml       # compile, tests, dbt parse
+├── docs/
+│   ├── img/                       # the diagrams in this README
+│   └── plans/                     # written plans for open problems
+├── site/                          # the project site (GitHub Pages)
+│   ├── index.html, assets/        # plain HTML, CSS and JS; assets/data.js is generated
+│   ├── assets/shots/              # dashboard screenshots (generated)
+│   └── tools/                     # refresh_data.py (BigQuery → data.js), capture_shots.mjs (Chrome → PNGs)
+├── .github/workflows/             # ci.yml (compile, tests, dbt parse), pages.yml (publish the site)
 ├── docker-compose.yml             # 14 services
+├── FRESH_START.md                 # wipe and rerun, with a check per layer
+├── CONTRIBUTING.md                # how the repository is worked on
 ├── .env.example
 └── requirements-dev.txt
 ```
@@ -560,26 +612,30 @@ marineflow/
 
 ## 14. Known limitations
 
-- **Spark runs in local mode**, one container per job, started by hand. Production would use Dataproc or GKE and a supervisor that restarts jobs.
+- **Spark runs in local mode**, one container per job, started and restarted by a shell script. Production would use Dataproc or GKE.
 - **Silver deduplication and movement deltas work per micro-batch.** The first position of a vessel in each batch has null speed and heading change, and a duplicate that lands in another batch is not removed.
 - **The reference lookups are coarse on purpose.** Flags come from 65 MIDs (35 countries); other vessels have a null flag. Ocean regions are bounding boxes: the Black Sea, the Sea of Marmara and the two sides of Central America are not modelled. `port_name`, `port_country` and `distance_to_port_km` only exist inside 0.3–0.5° boxes around 15 ports: `port_name` is the port whose zone contains the position (not the nearest port), `port_country` is that port's country (not an exclusive economic zone), and the distance uses 111 km per degree without a latitude correction. `reappeared_in_other_port` needs both ends of a gap to be inside port zones, so it only catches port-to-port gaps.
 - **There is no ship-to-ship (STS) transfer detection.** An earlier flag could never be true and was removed. A real version needs a port catalogue (for example the World Port Index) loaded as a dbt seed and a BigQuery geospatial join; 15 ports are far too few to say "far from any port".
 - **Delivery is at-least-once.** After a job was killed between writing a batch and saving its checkpoint, that batch was replayed: 999 duplicate positions out of 1.26 million (0.08%) in Bronze, 981 in Silver, and Silver only deduplicates inside a batch. Nothing was lost. The analysis and a two-step fix are in [docs/plans/at-least-once-duplicates.md](docs/plans/at-least-once-duplicates.md).
 - **Small files pile up** until you run the compaction, which is manual. Bronze is never compacted.
 - **Supervision is a shell loop, not an orchestrator.** `scripts/jobs.sh` restarts a killed job from its checkpoint, but it cannot fix a VM that is too small: with all five jobs the stack needs roughly 9 GiB, and Docker Desktop defaults to 7.75 GiB. Started by hand (`-it` terminals) nothing restarts a job at all, and the kernel's OOM killer can end one silently (`docker inspect <container> --format '{{.State.OOMKilled}}'` tells you). A dead job shows up as a missing series on the dashboards and, if it is Hot Alerts, as `vessel-alerts` going quiet.
-- **The hot path has one speed limit** (35 kn) and no Prometheus target.
+- **The hot path has one speed limit** (35 kn), no Prometheus target, and its alerts are noisy: in the first long run 73% were `SUDDEN_ACCELERATION` and 24% `IMPOSSIBLE_SPEED` across 827 vessels (for example a computed 83.8 kn for a vessel reporting 0 kn). Thresholds were never tuned against real traffic.
+- **An "impossible speed" can be a data problem, not a ship.** The fastest case in the first run was one MMSI at two places 10,105 km apart within 11 seconds, with the same longitude: a corrupted position report, a duplicated identifier or spoofing look the same to the detector. Risk scores are leads to check, not verdicts.
+- **Windows that need days are not exercised.** The 30-day risk score covered 4 hours and `vessel_erratic_course` (more than 10 sharp turns in a day) found nothing in 4 hours. They need weeks of data to mean what their names say.
+- **The rate charts look like a sawtooth** (see [Observability](#8-observability)); that is the system working, not an error.
 - **aisstream.io is in beta**, with no SLA. The producer retries with backoff and exits after 10 failed attempts.
 - **dbt `dev` and `prod` share a dataset.** Both targets point at `marineflow_gold`, so a local `dbt run` overwrites what Airflow produced. There is no separate development environment.
 - **Local credentials only.** Compose contains development defaults (Airflow's Fernet key and admin login, the database password) that must not be reused anywhere else.
 
 ### What is verified, and what is not
 
-| Verified | Not exercised recently |
+| Verified | Not verified yet |
 |---|---|
-| Unit tests locally and in CI; `dbt parse` with the same dbt version as Airflow in CI | The whole stack running end to end on the live feed |
-| Hot path and compaction on real Spark 3.5 in the project image | `dbt run` against BigQuery after the latest model changes |
-| The DAG imports in the Airflow image with the expected task graph | The compaction against the real bucket (run it with `--dry-run` first) |
-| `terraform validate` | `terraform apply` of the latest external-table change (a column that was always null was removed from the Silver `vessel_metadata` table) |
+| Unit tests locally and in CI; `dbt parse` with the same dbt version as Airflow in CI | Anything over days: a 30-day window, the erratic-course detector, the compaction of a day of real small files |
+| Hot path and compaction on real Spark 3.5 in the project image | The compaction against the real bucket (run it with `--dry-run` first; it has never run there) |
+| The whole stack on the live feed: 4 h 25 min, 1.26 million positions, 27,569 vessels, nothing in the dead-letter queue, no job crash once Docker had enough memory | Exactly-once delivery: a killed job replays a batch ([plan](docs/plans/at-least-once-duplicates.md)) |
+| Hourly DAG runs with all nine tasks green, `dbt_test` included, and the final `terraform apply` of the external tables | Alert quality: the hot path's thresholds were not tuned |
+| Gold tables populated: 2,899 speed anomalies, 658 dark events, 2,132 loitering sessions, 3,245 risk scores (4 h of data) | |
 
 ---
 

@@ -17,7 +17,7 @@ Every command is meant to be run from the repository root, in this order. Steps 
 | Step | What | Destroys data? |
 |---|---|---|
 | 0 | Variables | no |
-| 1 | Stop the producer and the Spark jobs | no |
+| 1 | Stop the producer, the Spark jobs and the DAG | no |
 | 2 | Wipe Kafka and the Hot Alerts state | **yes** (local) |
 | 3 | Wipe the bucket (`bronze/`, `silver/`, `checkpoints/`) | **yes** (GCS) |
 | 4 | Drop the gold tables | **yes** (BigQuery) |
@@ -38,7 +38,13 @@ export BUCKET=marineflow-lake-marineflow-489815      # the full GCS_BUCKET name
 
 ## 1. Stop the producer and the jobs
 
-Press Ctrl+C in the producer terminal and in each of the five `spark-submit` terminals. If a job was left running in the background:
+Press Ctrl+C in the producer terminal, then stop the jobs:
+
+```bash
+scripts/jobs.sh stop
+```
+
+If you started them by hand in terminals, Ctrl+C each one; if one was left running in the background:
 
 ```bash
 docker exec marineflow-spark-bronze pkill -TERM -f bronze_positions.py
@@ -107,11 +113,14 @@ docker exec marineflow-airflow-scheduler airflow dags delete marineflow_pipeline
 
 ## 5. Apply pending infrastructure changes
 
-The Silver external tables were changed (`port_name` and `port_country` replaced the old port columns, and one always-null metadata column was removed). The four external tables also changed their `source_uris` from `.../*` to `.../partition_date=*` and now declare their hive partition columns (`partition_date`, `partition_hour`) in the schema. The first makes BigQuery stop reading Spark's transient `_temporary/` files (without that, a dbt task that runs during a micro-batch commit fails with `Partition keys should be invariant`; the retry then passes). If you have not applied that yet, do it now, **before** the Silver jobs write the new files:
+On a project that is already applied, `terraform plan` should say there is nothing to do and you can skip to step 6. Run it anyway: a change to an external table's schema has to be applied **before** the Silver jobs write files that need it. Two properties of the four external tables matter, and both are in `infra/terraform/modules/bigquery/main.tf`:
+
+- their `source_uris` end in `partition_date=*`, not `/*`, so BigQuery does not read Spark's transient `_temporary/` files (otherwise a dbt task that runs during a micro-batch commit fails with `Partition keys should be invariant`);
+- their schemas declare the hive partition columns (`partition_date`, `partition_hour`), because BigQuery adds them to the table schema and the Terraform provider rejects an update whose two schemas differ (`schemas must be the same`). Adding a column to a Silver table means adding it here too.
 
 ```bash
 cd infra/terraform
-terraform plan          # read it: the four external tables are REPLACED (dropped and recreated; they hold no data, only a pointer to GCS), because their schemas now declare the hive partition columns; a few .keep objects may be created
+terraform plan          # read it. An external table may show as REPLACED (dropped and recreated): it holds no data, only a pointer to GCS. A few bronze/silver/checkpoints .keep objects may be created, because step 3 removed them
 terraform apply         # after reviewing the plan
 cd ../..
 ```
@@ -165,7 +174,7 @@ Hot Alerts is Kafka to Kafka: no GCS jars.
 docker exec -it marineflow-spark-hot-alerts /opt/spark/bin/spark-submit --master local[2] --driver-memory 1g --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 /opt/spark/processing/spark_streaming/hot_alerts.py
 ```
 
-Each job should print its startup log and then a micro-batch line every 30 seconds. An empty batch is normal until the producer runs.
+Each job should print its startup log and then a micro-batch line every 30 seconds (`scripts/jobs.sh logs <job>`). An empty batch is normal until the producer runs. The hand-run commands above give every job 1g of driver memory; the script gives the two metadata jobs 512m.
 
 ## 8. Start the producer
 
@@ -221,12 +230,29 @@ bq ls "$PROJECT:marineflow_gold"
 bq query --use_legacy_sql=false "SELECT COUNT(*) FROM \`$PROJECT.marineflow_gold.vessel_activity_summary\`"
 ```
 
-Some gold tables (dark events, speed anomalies, loitering, risk score) legitimately stay empty or small in the first hours: they need a vessel that went silent, moved too fast or lingered. Empty is not a failure; a red task is.
+Some gold tables (dark events, loitering, erratic course) legitimately stay empty or small in the first hours: they need a vessel that went silent for two hours, lingered for three, or turned sharply more than ten times in a day. Speed anomalies and the risk score should fill within the first hours. If the detector tables stay empty although the same SQL finds rows, an incremental cutoff is excluding everything (the models use a `coalesce` fallback for this). A red task is a failure; an empty `erratic_course` is not.
+
+## What a healthy run looked like
+
+Use these as a reference for a run of a few hours. They are the first long run's numbers (4 h 25 min of the live feed).
+
+| Check | Value |
+|---|---|
+| Producer rate | about 95 messages/s on average, in bursts of 136 to 400 per second |
+| Bronze output | follows the input; with the default 4000 cap it can reach 133/s while catching up |
+| Silver in BigQuery | 1.26 million positions, 27,569 vessels, 35 flags; newest event within seconds of the producer's last message |
+| Dead-letter queue | 0 |
+| Spark jobs | five `up`, `OOMKILLED` false, 0 restarts in `scripts/jobs.sh status`; batch latency 20 to 37 s against the 30 s trigger |
+| Docker VM memory | about 9 of 10.7 GiB in use |
+| Hourly DAG | all nine tasks green in about 1.5 to 8 minutes |
+| Gold after 4 h | 2,899 speed anomalies · 658 dark events · 2,132 loitering sessions · 3,245 risk scores · erratic course 0 |
+
+Expect the rate charts to look like a sawtooth (README, *Observability*).
 
 ## What to test on top
 
 - **Hot path**: `vessel-alerts` fills over time; the *Latest alerts* table on *Live traffic* follows it.
-- **Reset behaviour**: stop and restart one Silver job; it must resume from its checkpoint without reprocessing (offsets in the Kafka dashboard keep growing, no duplicate burst).
+- **Reset behaviour**: stop and restart one Silver job; it must resume from its checkpoint (offsets in the Kafka dashboard keep growing). A job killed at the wrong moment replays at most one batch, about 1,000 duplicate rows: that is the known at-least-once behaviour, see [docs/plans/at-least-once-duplicates.md](docs/plans/at-least-once-duplicates.md).
 - **Compaction** (after a day of data, when small files have piled up): always with `--dry-run` first. The command is in the README under *Silver compaction*.
 
 ## If something goes wrong
@@ -239,5 +265,6 @@ Some gold tables (dark events, speed anomalies, loitering, risk score) legitimat
 | The DAG run ends after the first task with everything skipped | Silver has no file from the last two hours. Check the Silver jobs and the producer |
 | Grafana panels are empty | The stack was up less than a minute, or the job was not started with `spark.sql.streaming.metricsEnabled=true` |
 | A job's driver process is just gone (no java process in `docker exec <container> ps aux`, "Spark jobs up" flickers below 4/4) | Likely OOM-killed: check `docker inspect <container> --format '{{.State.OOMKilled}}'`. Five 1 GB Spark drivers plus Kafka, Airflow, Grafana and Prometheus is heavy for Docker Desktop's default VM memory (often ~8 GB). Raise the VM's memory limit (Docker Desktop → Settings → Resources), or don't run all five jobs at once. Use `scripts/jobs.sh start`, which restarts a killed job by itself (`scripts/jobs.sh status` shows the restarts); with hand-started jobs nothing supervises them |
+| Bronze's output sits flat at `cap / 30` messages a second while the input is higher, and Silver or BigQuery lag behind | The micro-batch cap is below the feed's rate (README, *Sizing the micro-batch*). Check the value the container really has: `docker exec marineflow-spark-bronze env \| grep MAX_OFFSETS`; an explicit value in `.env` overrides the default, and a changed value needs the container recreated (`docker compose up -d <service>`) |
 | A job's very first batch after a restart is far slower than 30 s | Expected: it is catching up on everything the topic buffered while the job was down. Later batches return to normal once it clears the backlog |
 | *Live traffic* map is empty | `vessel-positions-bronze` is empty: Bronze is not running or the producer is not connected |
