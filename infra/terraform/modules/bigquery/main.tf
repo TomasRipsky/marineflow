@@ -119,7 +119,11 @@ resource "google_bigquery_table" "vessel_positions_raw" {
       { name = "_batch_id",                 type = "STRING",    mode = "NULLABLE", description = "Spark micro-batch ID" },
       { name = "_pipeline_version",         type = "STRING",    mode = "NULLABLE" },
       { name = "_ingestion_date",           type = "DATE",      mode = "NULLABLE" },
-      { name = "_source_file",              type = "STRING",    mode = "NULLABLE" }
+      { name = "_source_file",              type = "STRING",    mode = "NULLABLE" },
+      # Hive partition columns: BigQuery adds them to the table schema by itself (mode AUTO); the provider sends
+      # that table-level schema on every update, and the API rejects it unless this one is identical.
+      { name = "partition_date",        type = "DATE",      mode = "NULLABLE" },
+      { name = "partition_hour",        type = "INTEGER",   mode = "NULLABLE" }
     ])
   }
 }
@@ -167,7 +171,8 @@ resource "google_bigquery_table" "vessel_metadata_raw" {
       { name = "ingestion_timestamp",  type = "TIMESTAMP", mode = "NULLABLE" },
       { name = "_source_system",       type = "STRING",    mode = "NULLABLE" },
       { name = "_batch_id",            type = "STRING",    mode = "NULLABLE" },
-      { name = "_pipeline_version",    type = "STRING",    mode = "NULLABLE" }
+      { name = "_pipeline_version",    type = "STRING",    mode = "NULLABLE" },
+      { name = "partition_date",        type = "DATE",      mode = "NULLABLE" }
     ])
   }
 }
@@ -231,7 +236,8 @@ resource "google_bigquery_table" "vessel_positions_clean" {
       { name = "_source_file",           type = "STRING",    mode = "NULLABLE" },
       { name = "_bronze_batch_id",       type = "STRING",    mode = "NULLABLE" },
       { name = "_pipeline_version",      type = "STRING",    mode = "NULLABLE" },
-      { name = "_silver_batch_id",       type = "STRING",    mode = "NULLABLE" }
+      { name = "_silver_batch_id",       type = "STRING",    mode = "NULLABLE" },
+      { name = "partition_date",        type = "DATE",      mode = "NULLABLE" }
     ])
   }
 }
@@ -277,7 +283,8 @@ resource "google_bigquery_table" "vessel_metadata" {
       { name = "flag_country",           type = "STRING",    mode = "NULLABLE" },
       { name = "source_system",          type = "STRING",    mode = "NULLABLE" },
       { name = "processing_timestamp",   type = "TIMESTAMP", mode = "NULLABLE" },
-      { name = "_silver_batch_id",       type = "STRING",    mode = "NULLABLE" }
+      { name = "_silver_batch_id",       type = "STRING",    mode = "NULLABLE" },
+      { name = "partition_date",        type = "DATE",      mode = "NULLABLE" }
     ])
   }
 }

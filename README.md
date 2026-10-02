@@ -22,7 +22,7 @@
 | **Streaming** | 5 Spark Structured Streaming jobs (bronze ×2, silver ×2, hot alerts) and 6 Kafka topics |
 | **Batch** | 1 dbt project: 1 staging view + 7 gold models, **104 data tests**; 1 safe compaction job |
 | **Orchestration** | 1 Airflow DAG, hourly, 9 tasks |
-| **Quality** | **99 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
+| **Quality** | **100 unit tests**, 3 Spark smoke tests (real Spark), GitHub Actions CI on every push |
 | **Infrastructure** | Terraform (3 modules wired in: IAM, GCS, BigQuery), 14 Docker Compose services |
 | **Reference data** | 65 MID codes → 35 flag states · 79 AIS ship-type codes → 11 categories · 13 navigation statuses · 15 port zones · 11 ocean boxes → 7 regions |
 
@@ -439,7 +439,7 @@ Today the jobs run with **your own credentials** (Application Default Credential
 
 ```mermaid
 flowchart LR
-    change["Change"] --> unit["99 unit tests<br/>no Spark, no GCP"]
+    change["Change"] --> unit["100 unit tests<br/>no Spark, no GCP"]
     unit --> smoke["3 Spark smoke tests<br/>real Spark and Parquet, in the project image"]
     smoke --> ci["GitHub Actions<br/>compile, tests, dbt parse"]
     ci --> main["main"]
