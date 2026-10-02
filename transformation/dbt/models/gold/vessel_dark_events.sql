@@ -24,9 +24,9 @@ with ordered_positions as (
         lag(port_name)    over (partition by mmsi order by event_timestamp) as prev_port_name
     from {{ ref('stg_vessel_positions') }}
     {% if is_incremental() %}
-        where event_timestamp >= (
-            select timestamp_sub(max(signal_recovered_at), interval 6 hour)
-            from {{ this }}
+        where event_timestamp >= coalesce(
+            (select timestamp_sub(max(signal_recovered_at), interval 6 hour) from {{ this }}),
+            timestamp('1970-01-01')  -- an empty table has no max: a NULL cutoff would exclude every row, for ever
         )
     {% endif %}
 ),

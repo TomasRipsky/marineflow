@@ -36,9 +36,9 @@ with candidate_positions as (
       -- Only positions outside port zones
       and (is_in_port_zone = false or is_in_port_zone is null)
     {% if is_incremental() %}
-        and event_timestamp >= (
-            select timestamp_sub(max(window_start), interval 4 hour)
-            from {{ this }}
+        and event_timestamp >= coalesce(
+            (select timestamp_sub(max(window_start), interval 4 hour) from {{ this }}),
+            timestamp('1970-01-01')  -- an empty table has no max: a NULL cutoff would exclude every row, for ever
         )
     {% endif %}
 ),
