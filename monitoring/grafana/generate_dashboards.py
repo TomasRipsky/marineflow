@@ -334,7 +334,7 @@ def live():
                                             "AIS_GAP": {"color": "yellow", "index": 3}}}]
     d.add({"type": "table", "title": "Latest alerts", "datasource": KAFKA,
            "description": "The 8 newest alerts raised by the hot path.",
-           "gridPos": grid(0, 19, 16, 10), "targets": [kafka_target("vessel-alerts", 50)],
+           "gridPos": grid(0, 19, 16, 18), "targets": [kafka_target("vessel-alerts", 50)],
            "transformations": [
                {"id": "organize", "options": {"excludeByName": {"Time": True, "topic": True, "partition": True, "offset": True,
                                                                 "key": True, "alias": True},
@@ -355,7 +355,7 @@ def live():
 
     d.add({"type": "bargauge", "title": "Alerts by type (last 50)", "datasource": KAFKA,
            "description": "How the most recent alerts split by rule.",
-           "gridPos": grid(16, 19, 8, 10), "targets": [kafka_target("vessel-alerts", 50)],
+           "gridPos": grid(16, 19, 8, 18), "targets": [kafka_target("vessel-alerts", 50)],
            "transformations": [{"id": "groupBy", "options": {"fields": {"alert_type": {"aggregations": [], "operation": "groupby"},
                                                                           "mmsi": {"aggregations": ["count"], "operation": "aggregate"}}}}],
            "fieldConfig": {"defaults": {"min": 0, "color": {"mode": "continuous-YlRd"}, "thresholds": thresholds("blue"), "mappings": []},
